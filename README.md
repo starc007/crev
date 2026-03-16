@@ -111,8 +111,8 @@ crev init --ci         # print a GitHub Actions workflow to stdout
 ```
 
 Installs two hooks:
-- **pre-commit**: `crev review --staged --fail-on=high`
-- **pre-push**: `crev review --commits HEAD~3..HEAD --fail-on=high`
+- **pre-commit**: reviews staged changes before every commit
+- **pre-push**: reviews all unpushed commits only when pushing more than one — single commits are already covered by pre-commit
 
 ### `crev history`
 

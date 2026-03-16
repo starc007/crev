@@ -471,7 +471,16 @@ fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: b
     let pre_push = hooks_dir.join("pre-push");
 
     let pre_commit_content = "#!/bin/sh\ncrev review --staged --fail-on=high\n";
-    let pre_push_content = "#!/bin/sh\ncrev review --commits HEAD~3..HEAD --fail-on=high\n";
+    let pre_push_content = "\
+#!/bin/sh
+# Only review when pushing more than one new commit.
+# A single commit was already reviewed by the pre-commit hook.
+UPSTREAM=\"origin/$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\"
+COUNT=$(git rev-list \"$UPSTREAM..HEAD\" --count 2>/dev/null || echo 0)
+if [ \"$COUNT\" -gt 1 ]; then
+  crev review --commits \"$UPSTREAM..HEAD\" --fail-on=high
+fi
+";
 
     for (path, content, name) in [
         (&pre_commit, pre_commit_content, "pre-commit"),
