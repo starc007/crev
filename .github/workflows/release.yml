@@ -20,7 +20,7 @@ jobs:
             os: ubuntu-latest
             cross: true
           - target: x86_64-apple-darwin
-            os: macos-13        # Intel runner — native x86_64
+            os: macos-latest    # ARM runner, cross-compiles to x86_64 via Xcode SDK
             cross: false
           - target: aarch64-apple-darwin
             os: macos-latest    # ARM runner — native aarch64
