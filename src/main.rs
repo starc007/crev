@@ -179,7 +179,7 @@ async fn main() -> Result<()> {
                 let global_config = home.join(".config/crev/config.toml");
                 if global_config.exists() {
                     println!("Global config already exists at {}", global_config.display());
-                    println!("Use --force to overwrite (not yet implemented).");
+                    println!("Delete it manually to recreate it.");
                 } else {
                     config::save_default_config(&global_config)?;
                     println!("Created {}", global_config.display());
@@ -270,15 +270,11 @@ async fn run_review(
     // Build semantic context (Phase 2)
     let repo_root = git::find_repo_root(path)?;
     let ctx_builder = context::ContextBuilder::new(repo_root, cfg.review.max_tokens);
-    let prompt_text = match ctx_builder.build(diff).await {
+    let prompt_text = match ctx_builder.build(diff.clone()).await {
         Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security),
-        Err(_) => {
-            // Fallback to plain diff if context building fails
-            eprintln!("context: Minimal (fallback to diff-only)");
-            prompt::build_review_prompt(&git::ParsedDiff {
-                stats: git::DiffStats { files_changed: 0, lines_added: 0, lines_removed: 0 },
-                files: vec![],
-            }, &cfg, security)
+        Err(e) => {
+            eprintln!("context: Minimal (fallback to diff-only: {})", e);
+            prompt::build_review_prompt(&diff, &cfg, security)
         }
     };
 
