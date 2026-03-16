@@ -2,6 +2,7 @@ use crate::ast::FunctionInfo;
 use crate::config::Config;
 use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
+use crate::linters::LinterFinding;
 
 const SYSTEM_INSTRUCTIONS: &str = "\
 You are a senior engineer doing a focused code review.
@@ -50,8 +51,13 @@ LGTM: brief note if no issues found.
 Every finding must name the specific variable, function, or value involved.
 Do not output vague findings like 'add error handling' without specifics.";
 
-/// Build a prompt from a full ReviewContext (Phase 2+).
-pub fn build_review_prompt_ctx(ctx: &ReviewContext, config: &Config, security_mode: bool) -> String {
+/// Build a prompt from a full ReviewContext (Phase 2+) with optional linter findings.
+pub fn build_review_prompt_ctx(
+    ctx: &ReviewContext,
+    config: &Config,
+    security_mode: bool,
+    linter_findings: &[LinterFinding],
+) -> String {
     let mut prompt = String::new();
 
     // 1. System instructions
@@ -97,7 +103,24 @@ pub fn build_review_prompt_ctx(ctx: &ReviewContext, config: &Config, security_mo
         prompt.push('\n');
     }
 
-    // 6. Team rules
+    // 6. Linter findings
+    if !linter_findings.is_empty() {
+        prompt.push_str("=== LINTER FINDINGS ===\n");
+        for f in linter_findings {
+            prompt.push_str(&format!(
+                "{} at {}:{}\n",
+                f.code,
+                f.file.display(),
+                f.line
+            ));
+        }
+        prompt.push_str(
+            "For each linter finding above, assess: is this a genuine risk or a \
+             false positive given the context? Explain the actual consequence if real.\n\n",
+        );
+    }
+
+    // 7. Team rules
     if !config.rules.is_empty() {
         prompt.push_str("=== TEAM RULES ===\n");
         prompt.push_str("Also check for these team-specific rules:\n");

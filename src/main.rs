@@ -2,6 +2,8 @@ mod ast;
 mod config;
 mod context;
 mod git;
+mod history;
+mod linters;
 mod ollama;
 mod output;
 mod prompt;
@@ -267,16 +269,43 @@ async fn run_review(
         files: filtered_files,
     };
 
-    // Build semantic context (Phase 2)
+    // Build semantic context and run linters in parallel (Phase 2 + 3)
     let repo_root = git::find_repo_root(path)?;
-    let ctx_builder = context::ContextBuilder::new(repo_root, cfg.review.max_tokens);
-    let prompt_text = match ctx_builder.build(diff.clone()).await {
-        Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security),
+    let ctx_builder = context::ContextBuilder::new(repo_root.clone(), cfg.review.max_tokens);
+
+    let (ctx_result, linter_findings) = tokio::join!(
+        ctx_builder.build(diff.clone()),
+        linters::run_linters(&diff, &repo_root),
+    );
+
+    if !linter_findings.is_empty() {
+        let by_tool: std::collections::HashMap<&str, usize> =
+            linter_findings.iter().fold(std::collections::HashMap::new(), |mut m, f| {
+                *m.entry(f.linter.as_str()).or_insert(0) += 1;
+                m
+            });
+        let summary: Vec<String> = by_tool.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
+        eprintln!("linters: {} findings in diff ({})", linter_findings.len(), summary.join(", "));
+    }
+
+    let prompt_text = match ctx_result {
+        Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security, &linter_findings),
         Err(e) => {
             eprintln!("context: Minimal (fallback to diff-only: {})", e);
             prompt::build_review_prompt(&diff, &cfg, security)
         }
     };
+
+    // Show recurring patterns before the review output
+    if let Ok(patterns) = history::detect_patterns(&repo_root) {
+        for p in &patterns {
+            eprintln!(
+                "⚠ Recurring pattern detected ({}x in 30 days):\n  {}",
+                p.count,
+                p.pattern
+            );
+        }
+    }
 
     // Stream completion
     let start = Instant::now();
@@ -290,6 +319,18 @@ async fn run_review(
         output::print_findings_json(&findings)?;
     } else {
         output::print_findings(&findings, elapsed, &model);
+    }
+
+    // Save to history
+    if let Err(e) = history::save_review(&history::CompletedReview {
+        repo_path: repo_root.clone(),
+        commit_hash: None,
+        files_changed: diff.stats.files_changed,
+        findings: findings.clone(),
+        model_used: model.clone(),
+        elapsed_ms: elapsed.as_millis() as u64,
+    }) {
+        eprintln!("warning: could not save review history: {}", e);
     }
 
     // Handle --fail-on
@@ -416,9 +457,75 @@ fn print_ci_workflow() {
     print!("{}", workflow);
 }
 
-fn run_history(_patterns: bool, _clear: bool) -> Result<()> {
-    println!("History feature coming in Phase 3.");
+fn run_history(patterns: bool, clear: bool) -> Result<()> {
+    let repo_root = git::find_repo_root(&std::env::current_dir()?)?;
+
+    if clear {
+        history::clear_history(&repo_root)?;
+        println!("History cleared for {}", repo_root.display());
+        return Ok(());
+    }
+
+    if patterns {
+        let pats = history::detect_patterns(&repo_root)?;
+        if pats.is_empty() {
+            println!("No recurring patterns detected.");
+        } else {
+            println!("Recurring patterns (3+ occurrences in last 30 days):\n");
+            for p in &pats {
+                println!("  {}x  {}", p.count, p.pattern);
+                if let Some(f) = &p.file_path {
+                    println!("       in {}", f);
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // Default: show last 10 reviews
+    let reviews = history::get_recent_reviews(&repo_root, 10)?;
+    if reviews.is_empty() {
+        println!("No review history found for this repo.");
+    } else {
+        println!("{:<6} {:<12} {:<8} {:<6} {}", "ID", "DATE", "FILES", "FINDS", "MODEL");
+        println!("{}", "-".repeat(60));
+        for r in &reviews {
+            let date = format_unix_ts(r.timestamp);
+            println!(
+                "{:<6} {:<12} {:<8} {:<6} {}",
+                r.id, date, r.files_changed, r.finding_count, r.model_used
+            );
+        }
+    }
+
     Ok(())
+}
+
+fn format_unix_ts(ts: i64) -> String {
+    // Proper Gregorian calendar calculation without external deps
+    const DAYS_IN_MONTH: [u64; 12] = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+    let mut days = ts as u64 / 86400;
+    let mut year = 1970u64;
+    loop {
+        let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    let mut month = 0usize;
+    for (i, &dim) in DAYS_IN_MONTH.iter().enumerate() {
+        let dim = if i == 1 && leap { 29 } else { dim };
+        if days < dim {
+            month = i + 1;
+            break;
+        }
+        days -= dim;
+    }
+    format!("{}-{:02}-{:02}", year, month, days + 1)
 }
 
 fn run_rules(_action: RulesCommands) -> Result<()> {
