@@ -69,14 +69,13 @@ pub fn build_review_prompt_ctx(
     prompt.push_str(&format_diff(&ctx.diff));
     prompt.push('\n');
 
-    // 3. Called function signatures
+    // 3. Called function bodies
     if !ctx.called_functions.is_empty() {
-        prompt.push_str("=== FUNCTION SIGNATURES CALLED BY CHANGED CODE ===\n");
+        prompt.push_str("=== FUNCTIONS CALLED BY CHANGED CODE ===\n");
         for f in &ctx.called_functions {
-            prompt.push_str(&compress_function(f, 8));
-            prompt.push('\n');
+            prompt.push_str(&f.full_text);
+            prompt.push_str("\n\n");
         }
-        prompt.push('\n');
     }
 
     // 4. Types used
@@ -93,14 +92,13 @@ pub fn build_review_prompt_ctx(
         prompt.push('\n');
     }
 
-    // 5. Related tests (signatures only)
+    // 5. Related tests
     if !ctx.test_functions.is_empty() {
         prompt.push_str("=== RELATED TESTS ===\n");
         for f in &ctx.test_functions {
-            prompt.push_str(&f.signature);
-            prompt.push('\n');
+            prompt.push_str(&f.full_text);
+            prompt.push_str("\n\n");
         }
-        prompt.push('\n');
     }
 
     // 6. Linter findings

@@ -17,6 +17,9 @@ pub struct ParsedFile {
 #[derive(Debug, Clone)]
 pub struct FunctionInfo {
     pub name: String,
+    /// Full function text (signature + body).
+    pub full_text: String,
+    /// Signature only (up to the opening brace).
     pub signature: String,
     pub body_range: (u32, u32),
     pub called_functions: Vec<String>,
@@ -136,7 +139,15 @@ impl AstParser {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 fn node_text<'a>(node: &Node, source: &'a str) -> &'a str {
-    &source[node.start_byte()..node.end_byte()]
+    let start = node.start_byte().min(source.len());
+    let end = node.end_byte().min(source.len());
+    &source[start..end]
+}
+
+fn node_full_text(node: &Node, source: &str) -> String {
+    let start = node.start_byte().min(source.len());
+    let end = node.end_byte().min(source.len());
+    source[start..end].trim().to_string()
 }
 
 fn node_start_line(node: &Node) -> u32 {
@@ -218,7 +229,9 @@ fn parse_rust_fn(node: &Node, source: &str) -> Option<FunctionInfo> {
         .as_ref()
         .map(|b| b.start_byte())
         .unwrap_or(node.end_byte());
-    let signature = source[node.start_byte()..sig_end].trim().to_string();
+    let sig_start = node.start_byte().min(source.len());
+    let sig_end_clamped = sig_end.min(source.len());
+    let signature = source[sig_start..sig_end_clamped].trim().to_string();
 
     let body_range = (node_start_line(node), node_end_line(node));
 
@@ -234,6 +247,7 @@ fn parse_rust_fn(node: &Node, source: &str) -> Option<FunctionInfo> {
         .unwrap_or_default();
 
     Some(FunctionInfo {
+        full_text: node_full_text(node, source),
         name,
         signature,
         body_range,
@@ -346,13 +360,16 @@ fn parse_ts_fn(node: &Node, source: &str) -> Option<FunctionInfo> {
         .as_ref()
         .map(|b| b.start_byte())
         .unwrap_or(node.end_byte());
-    let signature = source[node.start_byte()..sig_end].trim().to_string();
+    let sig_start = node.start_byte().min(source.len());
+    let sig_end_clamped = sig_end.min(source.len());
+    let signature = source[sig_start..sig_end_clamped].trim().to_string();
 
     let called_functions = body
         .map(|b| collect_calls(&b, source))
         .unwrap_or_default();
 
     Some(FunctionInfo {
+        full_text: node_full_text(node, source),
         name,
         signature,
         body_range: (node_start_line(node), node_end_line(node)),
@@ -442,13 +459,16 @@ fn parse_python_fn(node: &Node, source: &str) -> Option<FunctionInfo> {
         .as_ref()
         .map(|b| b.start_byte())
         .unwrap_or(node.end_byte());
-    let signature = source[node.start_byte()..sig_end].trim().to_string();
+    let sig_start = node.start_byte().min(source.len());
+    let sig_end_clamped = sig_end.min(source.len());
+    let signature = source[sig_start..sig_end_clamped].trim().to_string();
 
     let called_functions = body
         .map(|b| collect_calls(&b, source))
         .unwrap_or_default();
 
     Some(FunctionInfo {
+        full_text: node_full_text(node, source),
         name,
         signature,
         body_range: (node_start_line(node), node_end_line(node)),
@@ -493,12 +513,15 @@ fn extract_go_functions(file: &ParsedFile) -> Vec<FunctionInfo> {
             if let Some(name) = node.child_by_field_name("name") {
                 let body = node.child_by_field_name("body");
                 let sig_end = body.as_ref().map(|b| b.start_byte()).unwrap_or(node.end_byte());
-                let signature = source[node.start_byte()..sig_end].trim().to_string();
+                let sig_start = node.start_byte().min(source.len());
+    let sig_end_clamped = sig_end.min(source.len());
+    let signature = source[sig_start..sig_end_clamped].trim().to_string();
                 let called_functions = body
                     .map(|b| collect_calls(&b, source))
                     .unwrap_or_default();
 
                 fns.push(FunctionInfo {
+                    full_text: node_full_text(&node, source),
                     name: node_text(&name, source).to_string(),
                     signature,
                     body_range: (node_start_line(&node), node_end_line(&node)),

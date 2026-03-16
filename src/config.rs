@@ -33,7 +33,7 @@ pub struct ReviewConfig {
 }
 
 fn default_max_tokens() -> usize {
-    8000
+    32000
 }
 
 fn default_severity_threshold() -> String {
@@ -151,7 +151,7 @@ pub fn save_default_config(path: &Path) -> Result<()> {
 
 [review]
 # model = "minimax-m2.5:cloud"   # override auto-detected model
-max_tokens = 8000
+max_tokens = 32000
 severity_threshold = "low"      # low | med | high — filter output below this
 # backend = "auto"              # auto | ollama | anthropic | openai
 # api_key_env = "ANTHROPIC_API_KEY"

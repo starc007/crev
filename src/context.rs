@@ -284,38 +284,42 @@ impl ContextBuilder {
         called: &[FunctionInfo],
         tests: &[FunctionInfo],
     ) -> (Vec<TypeDef>, Vec<FunctionInfo>, Vec<FunctionInfo>) {
-        // Rough token estimate for diff (already committed)
-        let diff_text = format!("{:?}", diff);
-        let mut used = estimate_tokens(&diff_text);
+        use crate::git::DiffLine;
+
+        // Estimate diff tokens from actual line content (same as it appears in the prompt)
+        let diff_chars: usize = diff.files.iter().flat_map(|f| f.hunks.iter()).flat_map(|h| h.lines.iter()).map(|l| match l {
+            DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.len() + 8,
+        }).sum();
+        let mut used = diff_chars / 4; // ~4 chars per token
         let budget = self.max_tokens;
 
         let mut kept_types = Vec::new();
         let mut kept_called = Vec::new();
         let mut kept_tests = Vec::new();
 
-        // Types
+        // Types: estimate from field list
         for t in types {
-            let cost = estimate_tokens(&format!("{:?}", t));
-            if used + cost <= budget {
-                used += cost;
+            let cost = estimate_tokens(&t.fields.join(", ")) + estimate_tokens(&t.name) + 4;
+            if used.saturating_add(cost) <= budget {
+                used = used.saturating_add(cost);
                 kept_types.push(t.clone());
             }
         }
 
-        // Called functions (signature + doc only)
+        // Called functions (full body)
         for f in called {
-            let cost = estimate_tokens(&f.signature) + f.doc_comment.as_ref().map(|d| estimate_tokens(d)).unwrap_or(0);
-            if used + cost <= budget {
-                used += cost;
+            let cost = estimate_tokens(&f.full_text);
+            if used.saturating_add(cost) <= budget {
+                used = used.saturating_add(cost);
                 kept_called.push(f.clone());
             }
         }
 
-        // Tests (signature only)
+        // Tests (full body)
         for f in tests {
-            let cost = estimate_tokens(&f.signature);
-            if used + cost <= budget {
-                used += cost;
+            let cost = estimate_tokens(&f.full_text);
+            if used.saturating_add(cost) <= budget {
+                used = used.saturating_add(cost);
                 kept_tests.push(f.clone());
             }
         }
