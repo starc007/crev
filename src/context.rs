@@ -308,6 +308,7 @@ impl ContextBuilder {
 
         // Called functions (full body)
         for f in called {
+            if f.full_text.is_empty() { continue; }
             let cost = estimate_tokens(&f.full_text);
             if used.saturating_add(cost) <= budget {
                 used = used.saturating_add(cost);
@@ -317,6 +318,7 @@ impl ContextBuilder {
 
         // Tests (full body)
         for f in tests {
+            if f.full_text.is_empty() { continue; }
             let cost = estimate_tokens(&f.full_text);
             if used.saturating_add(cost) <= budget {
                 used = used.saturating_add(cost);
