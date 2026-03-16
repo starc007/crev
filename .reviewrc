@@ -1,0 +1,30 @@
+# crev configuration file
+# See https://github.com/starc007/crev for documentation
+
+[review]
+# model = "minimax-m2.5:cloud"   # override auto-detected model
+max_tokens = 32000
+severity_threshold = "low"      # low | med | high — filter output below this
+# backend = "auto"              # auto | ollama | anthropic | openai
+# api_key_env = "ANTHROPIC_API_KEY"
+
+[privacy]
+strip_comments = false           # remove comments before sending to LLM
+strip_strings = false            # replace string literals with <REDACTED>
+
+[ignore]
+paths = [
+  "migrations/",
+  "*.generated.rs",
+  "vendor/",
+  "*.pb.go",
+]
+
+# Example custom rules:
+# [[rules]]
+# name = "no-raw-sql"
+# description = "All DB queries must go through QueryBuilder, never raw SQL strings"
+#
+# [[rules]]
+# name = "no-unwrap"
+# description = "Never use .unwrap() in non-test code paths, use ? or expect()"
