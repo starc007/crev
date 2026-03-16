@@ -1,4 +1,6 @@
+mod ast;
 mod config;
+mod context;
 mod git;
 mod ollama;
 mod output;
@@ -110,6 +112,10 @@ enum Commands {
         /// Show effective configuration
         #[arg(long)]
         show: bool,
+
+        /// Write default config to ~/.config/crev/config.toml
+        #[arg(long)]
+        init: bool,
     },
 }
 
@@ -164,10 +170,25 @@ async fn main() -> Result<()> {
             run_rules(action)?;
         }
 
-        Commands::Config { show } => {
-            if show {
+        Commands::Config { show, init } => {
+            if init {
+                let home = std::env::var("HOME")
+                    .or_else(|_| std::env::var("USERPROFILE"))
+                    .map(std::path::PathBuf::from)
+                    .map_err(|_| anyhow::anyhow!("Could not determine home directory"))?;
+                let global_config = home.join(".config/crev/config.toml");
+                if global_config.exists() {
+                    println!("Global config already exists at {}", global_config.display());
+                    println!("Use --force to overwrite (not yet implemented).");
+                } else {
+                    config::save_default_config(&global_config)?;
+                    println!("Created {}", global_config.display());
+                }
+            } else if show {
                 let cfg = config::load_config(&std::env::current_dir()?);
                 println!("{:#?}", cfg);
+            } else {
+                println!("Use --show to display config or --init to create ~/.config/crev/config.toml");
             }
         }
     }
@@ -246,8 +267,20 @@ async fn run_review(
         files: filtered_files,
     };
 
-    // Build prompt
-    let prompt_text = prompt::build_review_prompt(&diff, &cfg, security);
+    // Build semantic context (Phase 2)
+    let repo_root = git::find_repo_root(path)?;
+    let ctx_builder = context::ContextBuilder::new(repo_root, cfg.review.max_tokens);
+    let prompt_text = match ctx_builder.build(diff).await {
+        Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security),
+        Err(_) => {
+            // Fallback to plain diff if context building fails
+            eprintln!("context: Minimal (fallback to diff-only)");
+            prompt::build_review_prompt(&git::ParsedDiff {
+                stats: git::DiffStats { files_changed: 0, lines_added: 0, lines_removed: 0 },
+                files: vec![],
+            }, &cfg, security)
+        }
+    };
 
     // Stream completion
     let start = Instant::now();
@@ -350,15 +383,7 @@ fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: b
 }
 
 fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
-    let mut dir = start.to_path_buf();
-    loop {
-        if dir.join(".git").exists() {
-            return Ok(dir);
-        }
-        if !dir.pop() {
-            anyhow::bail!("Not inside a git repository");
-        }
-    }
+    git::find_repo_root(start)
 }
 
 fn print_ci_workflow() {

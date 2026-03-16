@@ -296,3 +296,15 @@ fn parse_diff(diff: git2::Diff) -> Result<ParsedDiff> {
         files,
     })
 }
+
+pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
+    let mut dir = start.to_path_buf();
+    loop {
+        if dir.join(".git").exists() {
+            return Ok(dir);
+        }
+        if !dir.pop() {
+            anyhow::bail!("Not inside a git repository");
+        }
+    }
+}

@@ -1,4 +1,6 @@
+use crate::ast::FunctionInfo;
 use crate::config::Config;
+use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
 
 const SYSTEM_INSTRUCTIONS: &str = "\
@@ -39,6 +41,72 @@ LGTM: brief note if no issues found.
 Every finding must name the specific variable, function, or value involved.
 Do not output vague findings like 'add error handling' without specifics.";
 
+/// Build a prompt from a full ReviewContext (Phase 2+).
+pub fn build_review_prompt_ctx(ctx: &ReviewContext, config: &Config, security_mode: bool) -> String {
+    let mut prompt = String::new();
+
+    // 1. System instructions
+    prompt.push_str(if security_mode { SECURITY_INSTRUCTIONS } else { SYSTEM_INSTRUCTIONS });
+    prompt.push_str("\n\n");
+
+    // 2. Changed code
+    prompt.push_str("=== CHANGED CODE ===\n");
+    prompt.push_str(&format_diff(&ctx.diff));
+    prompt.push('\n');
+
+    // 3. Called function signatures
+    if !ctx.called_functions.is_empty() {
+        prompt.push_str("=== FUNCTION SIGNATURES CALLED BY CHANGED CODE ===\n");
+        for f in &ctx.called_functions {
+            prompt.push_str(&compress_function(f, 8));
+            prompt.push('\n');
+        }
+        prompt.push('\n');
+    }
+
+    // 4. Types used
+    if !ctx.types_used.is_empty() {
+        prompt.push_str("=== TYPES USED ===\n");
+        for t in &ctx.types_used {
+            prompt.push_str(&format!(
+                "{} {} {{ {} }}\n",
+                format!("{:?}", t.kind).to_lowercase(),
+                t.name,
+                t.fields.join(", ")
+            ));
+        }
+        prompt.push('\n');
+    }
+
+    // 5. Related tests (signatures only)
+    if !ctx.test_functions.is_empty() {
+        prompt.push_str("=== RELATED TESTS ===\n");
+        for f in &ctx.test_functions {
+            prompt.push_str(&f.signature);
+            prompt.push('\n');
+        }
+        prompt.push('\n');
+    }
+
+    // 6. Team rules
+    if !config.rules.is_empty() {
+        prompt.push_str("=== TEAM RULES ===\n");
+        prompt.push_str("Also check for these team-specific rules:\n");
+        for rule in &config.rules {
+            prompt.push_str(&format!("- [{}]: {}\n", rule.name, rule.description));
+        }
+        prompt.push('\n');
+    }
+
+    // 7. Output format (always last)
+    prompt.push_str("=== OUTPUT FORMAT ===\n");
+    prompt.push_str(OUTPUT_FORMAT);
+    prompt.push('\n');
+
+    prompt
+}
+
+/// Fallback: build a prompt from a raw diff only (Phase 1 behaviour).
 pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bool) -> String {
     let diff = if estimate_tokens(&format_diff(diff)) > config.review.max_tokens {
         truncate_to_budget(diff, config.review.max_tokens)
@@ -48,34 +116,39 @@ pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bo
 
     let mut prompt = String::new();
 
-    // 1. System instructions
-    if security_mode {
-        prompt.push_str(SECURITY_INSTRUCTIONS);
-    } else {
-        prompt.push_str(SYSTEM_INSTRUCTIONS);
-    }
+    prompt.push_str(if security_mode { SECURITY_INSTRUCTIONS } else { SYSTEM_INSTRUCTIONS });
     prompt.push_str("\n\n");
 
-    // 2. Changed code
     prompt.push_str("=== CHANGED CODE ===\n");
     prompt.push_str(&format_diff(&diff));
     prompt.push('\n');
 
-    // 3. Output format
-    prompt.push_str("=== OUTPUT FORMAT ===\n");
-    prompt.push_str(OUTPUT_FORMAT);
-    prompt.push('\n');
-
-    // 4. Team rules (only if non-empty)
     if !config.rules.is_empty() {
         prompt.push_str("\n=== TEAM RULES ===\n");
-        prompt.push_str("Also check for these team-specific rules:\n");
         for rule in &config.rules {
             prompt.push_str(&format!("- [{}]: {}\n", rule.name, rule.description));
         }
     }
 
+    prompt.push_str("=== OUTPUT FORMAT ===\n");
+    prompt.push_str(OUTPUT_FORMAT);
+    prompt.push('\n');
+
     prompt
+}
+
+pub fn compress_function(fn_info: &FunctionInfo, max_lines: usize) -> String {
+    let body_lines: Vec<&str> = fn_info.signature.lines().collect();
+    if body_lines.len() <= max_lines {
+        return fn_info.signature.clone();
+    }
+    let truncated: Vec<&str> = body_lines.iter().take(max_lines).copied().collect();
+    let omitted = body_lines.len() - max_lines;
+    format!(
+        "{}\n// ... ({} lines omitted)",
+        truncated.join("\n"),
+        omitted
+    )
 }
 
 fn format_diff(diff: &ParsedDiff) -> String {
