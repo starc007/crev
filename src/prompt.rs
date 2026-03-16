@@ -11,6 +11,11 @@ Do NOT comment on: style, formatting, naming conventions, or anything \
 a linter would catch.
 If the change looks correct, say LGTM with one sentence of explanation.
 
+For performance findings: only report if you can identify a specific hot path \
+where the cost is significant AND avoidable given the surrounding constraints. \
+Do not flag allocations or copies that are structurally required by the \
+language, the API contract, or the calling convention.
+
 Every finding must name the specific variable, function, or value involved. \
 If you cannot name it specifically, do not output the finding.
 Maximum 5 findings per review. If you find more, report only the 5 highest \
@@ -19,7 +24,11 @@ severity ones. Quality over quantity.
 BAD:  [MED] src/main.rs:42 — Missing error handling
 GOOD: [MED] src/main.rs:42 — db.execute() result is silently ignored; \
 if the INSERT fails, the caller receives a success response \
-while the data was never written";
+while the data was never written
+
+BAD:  [MED] src/main.rs:99 — Unnecessary allocation on this line
+GOOD: [MED] src/main.rs:99 — buffer is re-allocated inside the loop on every \
+iteration; moving the allocation before the loop would reduce it to once";
 
 const SECURITY_INSTRUCTIONS: &str = "\
 You are a security engineer doing a targeted vulnerability review.
