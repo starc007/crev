@@ -213,15 +213,22 @@ pub fn print_findings_json(findings: &[Finding]) -> Result<()> {
         })
         .collect();
 
+    // Only emit annotations when we have an actual line number; without one
+    // GitHub would pin the annotation to line 1, which is misleading.
     let github_annotations: Vec<GithubAnnotation> = findings
         .iter()
-        .filter(|f| f.severity != Severity::Lgtm && !f.file.as_os_str().is_empty())
-        .map(|f| GithubAnnotation {
-            path: f.file.display().to_string(),
-            start_line: f.line.unwrap_or(1),
-            end_line: f.line.unwrap_or(1),
-            annotation_level: f.severity.annotation_level().to_string(),
-            message: f.message.clone(),
+        .filter(|f| {
+            f.severity != Severity::Lgtm && !f.file.as_os_str().is_empty() && f.line.is_some()
+        })
+        .map(|f| {
+            let line = f.line.expect("filtered above");
+            GithubAnnotation {
+                path: f.file.display().to_string(),
+                start_line: line,
+                end_line: line,
+                annotation_level: f.severity.annotation_level().to_string(),
+                message: f.message.clone(),
+            }
         })
         .collect();
 

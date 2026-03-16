@@ -106,10 +106,16 @@ pub fn load_config(start_dir: &Path) -> Config {
     loop {
         let candidate = dir.join(".reviewrc");
         if candidate.exists() {
-            if let Ok(content) = std::fs::read_to_string(&candidate) {
-                if let Ok(cfg) = toml::from_str::<Config>(&content) {
-                    return cfg;
+            match std::fs::read_to_string(&candidate) {
+                Err(e) => {
+                    eprintln!("warning: could not read {}: {}", candidate.display(), e);
                 }
+                Ok(content) => match toml::from_str::<Config>(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => {
+                        eprintln!("warning: invalid config at {}: {}", candidate.display(), e);
+                    }
+                },
             }
             break;
         }
@@ -122,10 +128,16 @@ pub fn load_config(start_dir: &Path) -> Config {
     if let Some(home) = home_dir() {
         let global = home.join(".config/crev/config.toml");
         if global.exists() {
-            if let Ok(content) = std::fs::read_to_string(&global) {
-                if let Ok(cfg) = toml::from_str::<Config>(&content) {
-                    return cfg;
+            match std::fs::read_to_string(&global) {
+                Err(e) => {
+                    eprintln!("warning: could not read {}: {}", global.display(), e);
                 }
+                Ok(content) => match toml::from_str::<Config>(&content) {
+                    Ok(cfg) => return cfg,
+                    Err(e) => {
+                        eprintln!("warning: invalid global config at {}: {}", global.display(), e);
+                    }
+                },
             }
         }
     }
@@ -135,10 +147,10 @@ pub fn load_config(start_dir: &Path) -> Config {
 
 pub fn save_default_config(path: &Path) -> Result<()> {
     let content = r#"# crev configuration file
-# See https://github.com/your-org/crev for documentation
+# See https://github.com/starc007/crev for documentation
 
 [review]
-# model = "qwen2.5-coder:14b"   # override auto-detected model
+# model = "minimax-m2.5:cloud"   # override auto-detected model
 max_tokens = 8000
 severity_threshold = "low"      # low | med | high — filter output below this
 # backend = "auto"              # auto | ollama | anthropic | openai
