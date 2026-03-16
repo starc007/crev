@@ -46,8 +46,8 @@ jobs:
         if: matrix.cross
         run: cross build --release --target ${{ matrix.target }}
 
-      - name: Strip binary (Linux)
-        if: runner.os == 'Linux'
+      - name: Strip binary (Linux native only)
+        if: runner.os == 'Linux' && !matrix.cross
         run: strip target/${{ matrix.target }}/release/crev
 
       - name: Package
