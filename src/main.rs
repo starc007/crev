@@ -473,6 +473,11 @@ fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: b
     let pre_commit_content = "#!/bin/sh\ncrev review --staged --fail-on=high\n";
     let pre_push_content = "\
 #!/bin/sh
+# Skip tag pushes — nothing to review.
+while IFS=' ' read -r local_ref _a _b _c; do
+  case \"$local_ref\" in refs/tags/*) exit 0 ;; esac
+done
+
 # Only review when pushing more than one new commit.
 # A single commit was already reviewed by the pre-commit hook.
 UPSTREAM=\"origin/$(git rev-parse --abbrev-ref HEAD 2>/dev/null)\"
