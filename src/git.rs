@@ -298,7 +298,8 @@ fn parse_diff(diff: git2::Diff) -> Result<ParsedDiff> {
 }
 
 pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
-    let mut dir = start.to_path_buf();
+    let mut dir = std::fs::canonicalize(start)
+        .unwrap_or_else(|_| start.to_path_buf());
     loop {
         if dir.join(".git").exists() {
             return Ok(dir);
