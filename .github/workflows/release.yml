@@ -19,10 +19,10 @@ jobs:
             os: ubuntu-latest
             cross: true
           - target: x86_64-apple-darwin
-            os: macos-latest
+            os: macos-13        # Intel runner — native x86_64
             cross: false
           - target: aarch64-apple-darwin
-            os: macos-latest
+            os: macos-latest    # ARM runner — native aarch64
             cross: false
 
     steps:
@@ -43,6 +43,10 @@ jobs:
 
       - name: Build (cross)
         if: matrix.cross
+        env:
+          OPENSSL_STATIC: "1"
+          OPENSSL_LIB_DIR: /usr/lib/x86_64-linux-gnu
+          OPENSSL_INCLUDE_DIR: /usr/include/openssl
         run: cross build --release --target ${{ matrix.target }}
 
       - name: Strip binary (Linux)
