@@ -438,7 +438,7 @@ fn print_ci_workflow() {
         "        with:\n",
         "          fetch-depth: 0\n",
         "      - name: Install crev\n",
-        "        run: cargo install crev --locked\n",
+        "        run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh\n",
         "      - name: Install Ollama\n",
         "        run: curl -fsSL https://ollama.ai/install.sh | sh\n",
         "      - name: Start Ollama\n",
