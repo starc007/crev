@@ -117,6 +117,78 @@ fn parse_severity_line(line: &str) -> Option<Finding> {
     })
 }
 
+/// Try to parse a single line into a Finding.
+pub fn try_parse_finding_line(line: &str) -> Option<Finding> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    if let Some(f) = parse_severity_line(line) {
+        return Some(f);
+    }
+    if line.starts_with("LGTM:") || line.starts_with("LGTM ") {
+        let msg = line
+            .trim_start_matches("LGTM:")
+            .trim_start_matches("LGTM")
+            .trim()
+            .to_string();
+        return Some(Finding {
+            severity: Severity::Lgtm,
+            file: PathBuf::new(),
+            line: None,
+            message: if msg.is_empty() { "No issues found.".to_string() } else { msg },
+        });
+    }
+    None
+}
+
+/// Print a single finding (colored).
+pub fn print_finding(f: &Finding) {
+    match f.severity {
+        Severity::High => {
+            let prefix = "[!] HIGH ".bold().red();
+            let location = format_location(&f.file, f.line);
+            println!("{}{}", prefix, location.bold());
+            println!("    {}", f.message);
+        }
+        Severity::Med => {
+            let prefix = "[~] MED  ".yellow();
+            let location = format_location(&f.file, f.line);
+            println!("{}{}", prefix, location);
+            println!("    {}", f.message);
+        }
+        Severity::Low => {
+            let prefix = "[i] LOW  ".blue();
+            let location = format_location(&f.file, f.line);
+            println!("{}{}", prefix, location);
+            println!("    {}", f.message);
+        }
+        Severity::Lgtm => {
+            println!("{} {}", "[✓] LGTM".green().bold(), f.message.green());
+        }
+    }
+}
+
+/// Print the summary line after all findings.
+pub fn print_summary(findings: &[Finding], elapsed: Duration, model: &str) {
+    if findings.is_empty() {
+        println!("{}", "[✓] No findings — review output was empty.".green());
+        return;
+    }
+    let has_lgtm = findings.iter().any(|f| f.severity == Severity::Lgtm);
+    if has_lgtm {
+        return;
+    }
+    let high = findings.iter().filter(|f| f.severity == Severity::High).count();
+    let med  = findings.iter().filter(|f| f.severity == Severity::Med).count();
+    let low  = findings.iter().filter(|f| f.severity == Severity::Low).count();
+    let summary = format!(
+        "{} findings ({} high, {} med, {} low) · {:.1}s · {}",
+        high + med + low, high, med, low, elapsed.as_secs_f64(), model
+    );
+    println!("\n{}", summary.dimmed());
+}
+
 pub fn print_findings(findings: &[Finding], elapsed: Duration, model: &str) {
     if findings.is_empty() {
         println!("{}", "[✓] No findings — review output was empty.".green());

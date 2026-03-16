@@ -1,10 +1,10 @@
 # crev
 
-Local AI code review from the command line. Runs entirely on your machine — no API keys, no data leaving your network.
+AI code review from the command line. Runs locally via Ollama or with any cloud LLM.
 
 ```
 $ crev review --staged
-using minimax-m2.5:cloud via Ollama (local)
+using qwen2.5-coder:14b via Ollama (local)
 reviewing 3 files (47 added, 12 removed)
 context: Rich (4 types, 6 called fns, 2 tests)
 
@@ -18,16 +18,17 @@ context: Rich (4 types, 6 called fns, 2 tests)
 
 [✓] LGTM src/utils/format.rs — change looks correct
 
-3 findings (1 high, 1 med, 0 low) · 4.2s · minimax-m2.5:cloud
+3 findings (1 high, 1 med, 0 low) · 4.2s · qwen2.5-coder:14b
 ```
 
 ---
 
 ## Requirements
 
-- [Ollama](https://ollama.ai) running locally (`ollama serve`)
-- A code model pulled: `ollama pull qwen2.5-coder:7b`
 - A git repository
+- One of:
+  - [Ollama](https://ollama.ai) running locally (`ollama serve` + `ollama pull qwen2.5-coder:7b`)
+  - `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY` set
 
 ---
 
@@ -54,6 +55,9 @@ git add -p
 # Review them
 crev review --staged
 
+# Use a cloud model instead
+crev review --staged --model claude-sonnet-4-6
+
 # Install git hooks so every commit is reviewed automatically
 crev init
 ```
@@ -64,7 +68,7 @@ crev init
 
 ### `crev review`
 
-Reviews code changes using a local LLM.
+Reviews code changes.
 
 ```
 Options:
@@ -72,10 +76,11 @@ Options:
   --unstaged          Review unstaged changes
   --commit <HASH>     Review a specific commit
   --commits <RANGE>   Review a commit range  e.g. HEAD~3..HEAD
+  --model, -m <MODEL> Model to use (overrides config)
   --json              Output findings as JSON
   --fail-on <SEV>     Exit 1 if any finding at or above this severity [low|med|high]
   --security          Security-focused review mode
-  --no-cloud          Never fall back to a cloud LLM
+  --no-cloud          Never use a cloud LLM
   --path <PATH>       Path to git repo (default: current directory)
 ```
 
@@ -85,6 +90,8 @@ Options:
 crev review --staged
 crev review --commit abc1234
 crev review --commits main..feature-branch
+crev review --staged --model gpt-4o
+crev review --staged --model claude-sonnet-4-6
 crev review --staged --fail-on=high    # blocks git hooks on HIGH findings
 crev review --staged --json            # machine-readable output
 crev review --staged --security        # security-only scan
@@ -128,6 +135,72 @@ crev config --init    # create ~/.config/crev/config.toml with defaults
 
 ---
 
+## Models and backends
+
+crev supports four backends. The backend is auto-selected based on what's available.
+
+### Auto-detection order
+
+1. Ollama running locally → use Ollama
+2. `ANTHROPIC_API_KEY` set → use Anthropic
+3. `OPENAI_API_KEY` set → use OpenAI
+4. `GEMINI_API_KEY` / `GOOGLE_API_KEY` set → use Gemini
+
+### Selecting a model
+
+The `--model` flag infers the backend from the model name:
+
+```sh
+# Ollama (local)
+crev review --model qwen2.5-coder:14b
+crev review --model deepseek-coder-v2:16b
+
+# Anthropic
+crev review --model claude-sonnet-4-6
+crev review --model claude-opus-4-6
+
+# OpenAI
+crev review --model gpt-4o
+crev review --model o3
+
+# Gemini
+crev review --model gemini-1.5-pro
+```
+
+### API keys
+
+```sh
+export ANTHROPIC_API_KEY=sk-ant-...
+export OPENAI_API_KEY=sk-...
+export GEMINI_API_KEY=...        # or GOOGLE_API_KEY
+```
+
+### OpenAI-compatible endpoints
+
+Any OpenAI-compatible API (Groq, Together, local vLLM, etc.) works via `OPENAI_BASE_URL`:
+
+```sh
+export OPENAI_API_KEY=your-key
+export OPENAI_BASE_URL=https://api.groq.com
+crev review --model llama-3.1-70b-versatile
+```
+
+### Ollama local models
+
+crev picks the best available Ollama model automatically:
+
+| Model | Min RAM | Quality |
+|---|---|---|
+| `qwen2.5-coder:14b` | 16 GB | ★★★★★ |
+| `qwen2.5-coder:7b` | 8 GB | ★★★★☆ |
+| `deepseek-coder-v2:16b` | 16 GB | ★★★★★ |
+| `codellama:13b` | 8 GB | ★★★★☆ |
+| `llama3:8b` | 8 GB | ★★★☆☆ |
+
+Set `OLLAMA_HOST` to point at a remote Ollama instance.
+
+---
+
 ## Configuration
 
 `crev init` creates `.reviewrc` in your repo root. Commit it to share settings with your team.
@@ -135,6 +208,8 @@ crev config --init    # create ~/.config/crev/config.toml with defaults
 ```toml
 [review]
 # model = "qwen2.5-coder:14b"   # override auto-detected model
+# backend = "anthropic"          # ollama | anthropic | openai | gemini
+# api_key_env = "MY_API_KEY"     # env var to read the API key from (default per-backend)
 max_tokens = 8000
 severity_threshold = "low"      # low | med | high
 
@@ -204,19 +279,13 @@ If linters are installed, crev runs them in parallel and includes their output i
 
 Linters that are not installed are silently skipped. Only findings within ±5 lines of a changed line are included.
 
-### 4. Model selection
+### 4. Backend selection
 
-crev picks the best available model automatically:
+crev resolves the backend and model in this order:
 
-| Model | Min RAM | Quality |
-|---|---|---|
-| `qwen2.5-coder:14b` | 16 GB | ★★★★★ |
-| `qwen2.5-coder:7b` | 8 GB | ★★★★☆ |
-| `deepseek-coder-v2:16b` | 16 GB | ★★★★★ |
-| `codellama:13b` | 8 GB | ★★★★☆ |
-| `llama3:8b` | 8 GB | ★★★☆☆ |
-
-Override with `model = "..."` in `.reviewrc`. Set `OLLAMA_HOST` to point at a remote Ollama instance.
+1. `--model` CLI flag (backend inferred from name)
+2. `model` / `backend` in `.reviewrc`
+3. Auto-detection (Ollama → Anthropic → OpenAI → Gemini)
 
 ---
 
@@ -274,15 +343,25 @@ crev init --ci > .github/workflows/crev.yml
 Or add to an existing workflow:
 
 ```yaml
-- name: Install Ollama
-  run: curl -fsSL https://ollama.ai/install.sh | sh
+- name: Install crev
+  run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
 
-- name: Review PR
+# Option A: local Ollama
+- name: Review PR (Ollama)
   run: |
+    curl -fsSL https://ollama.ai/install.sh | sh
     ollama serve &
     ollama pull qwen2.5-coder:7b
     crev review --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
       --json > findings.json
+
+# Option B: cloud model (no Ollama needed)
+- name: Review PR (Anthropic)
+  env:
+    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+  run: |
+    crev review --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
+      --model claude-sonnet-4-6 --json > findings.json
 ```
 
 ---
@@ -305,8 +384,9 @@ This surfaces systemic issues that keep slipping through code review.
 - **Nothing leaves your machine by default.** The LLM runs locally via Ollama.
 - The diff is sent only to `localhost:11434`.
 - No telemetry, no accounts, no network requests outside Ollama.
+- When using a cloud backend, only the diff and context are sent — no repo metadata.
 - Use `strip_comments` and `strip_strings` in `.reviewrc` if the code contains sensitive data.
-- Use `--no-cloud` to hard-disable cloud fallback even if configured.
+- Use `--no-cloud` to hard-disable cloud fallback even if API keys are set.
 
 ---
 

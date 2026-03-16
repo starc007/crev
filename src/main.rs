@@ -4,6 +4,7 @@ mod context;
 mod git;
 mod history;
 mod linters;
+mod llm;
 mod ollama;
 mod output;
 mod prompt;
@@ -11,6 +12,7 @@ mod prompt;
 use anyhow::Result;
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 #[derive(Parser)]
@@ -63,6 +65,10 @@ enum Commands {
         /// Never fall back to cloud LLM
         #[arg(long)]
         no_cloud: bool,
+
+        /// Model to use (e.g. qwen2.5-coder:14b, claude-sonnet-4-5, gpt-4o, gemini-1.5-pro)
+        #[arg(long, short = 'm')]
+        model: Option<String>,
 
         /// Path to git repo (default: current directory)
         #[arg(long, default_value = ".")]
@@ -148,10 +154,11 @@ async fn main() -> Result<()> {
             fail_on,
             security,
             verbose: _verbose,
-            no_cloud: _no_cloud,
+            no_cloud,
+            model,
             path,
         } => {
-            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security).await?;
+            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security, no_cloud, model).await?;
         }
 
         Commands::Init {
@@ -207,24 +214,27 @@ async fn run_review(
     json: bool,
     fail_on: Option<String>,
     security: bool,
+    no_cloud: bool,
+    cli_model: Option<String>,
 ) -> Result<()> {
     let cfg = config::load_config(path);
 
-    // Check Ollama is running
-    if !ollama::is_running().await {
-        anyhow::bail!("Ollama is not running. Start it with: ollama serve");
-    }
+    // Resolve backend + model (CLI flag > config > auto-detect)
+    let requested_model = cli_model.as_deref().or(cfg.review.model.as_deref());
+    let (backend, model) = llm::resolve(
+        requested_model,
+        &cfg.review.backend,
+        cfg.review.api_key_env.as_deref(),
+        no_cloud,
+    )
+    .await?;
 
-    // Get available models and pick the best one
-    let models = ollama::list_models().await?;
-    let model = cfg
-        .review
-        .model
-        .clone()
-        .or_else(|| ollama::detect_best_model(&models))
-        .unwrap_or_else(|| "llama3:8b".to_string());
-
-    eprintln!("using {} via Ollama (local)", model);
+    eprintln!(
+        "using {} via {} ({})",
+        model,
+        backend.name(),
+        if backend.is_local() { "local" } else { "cloud" }
+    );
 
     // Get the diff
     let diff = if unstaged {
@@ -307,18 +317,86 @@ async fn run_review(
         }
     }
 
-    // Stream completion
-    let start = Instant::now();
-    let full_response = ollama::stream_completion(&prompt_text, &model, |_| {}).await?;
-    let elapsed = start.elapsed();
+    // ── Spinner ──────────────────────────────────────────────────────────────
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let spinner_task = tokio::spawn(async move {
+        let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
+        let mut i = 0usize;
+        loop {
+            tokio::select! {
+                _ = tokio::time::sleep(tokio::time::Duration::from_millis(80)) => {
+                    use std::io::Write;
+                    eprint!("\r{} analyzing...", frames[i % frames.len()]);
+                    std::io::stderr().flush().ok();
+                    i += 1;
+                }
+                _ = stop_rx.changed() => {
+                    use std::io::Write;
+                    eprint!("\r\x1b[K");
+                    std::io::stderr().flush().ok();
+                    break;
+                }
+            }
+        }
+    });
 
-    // Parse and display findings
-    let findings = output::parse_findings(&full_response);
+    // ── Stream completion, buffer complete lines ──────────────────────────────
+    let line_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+    let line_buf2 = line_buf.clone();
+    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let line_tx2 = line_tx.clone();
+
+    let start = Instant::now();
+    let full_response = backend.complete(&prompt_text, &(move |token: &str| {
+        let mut buf = line_buf2.lock().unwrap();
+        buf.push_str(token);
+        while let Some(nl) = buf.find('\n') {
+            let line = buf[..nl].to_string();
+            *buf = buf[nl + 1..].to_string();
+            if !line.trim().is_empty() {
+                let _ = line_tx2.send(line);
+            }
+        }
+    })).await?;
+
+    // Flush any remaining content not terminated with a newline
+    {
+        let buf = line_buf.lock().unwrap();
+        if !buf.trim().is_empty() {
+            let _ = line_tx.send(buf.trim().to_string());
+        }
+    }
+    drop(line_tx); // close channel so receiver loop exits
+
+    // ── Consume lines: stop spinner then print each finding ───────────────────
+    let mut findings: Vec<output::Finding> = Vec::new();
+    let mut spinner_task = Some(spinner_task);
+
+    while let Some(line) = line_rx.recv().await {
+        if let Some(f) = output::try_parse_finding_line(&line) {
+            if let Some(task) = spinner_task.take() {
+                stop_tx.send(true).ok();
+                task.await.ok();
+            }
+            if !json {
+                output::print_finding(&f);
+            }
+            findings.push(f);
+        }
+    }
+
+    // Stop spinner if model returned nothing parseable
+    if let Some(task) = spinner_task.take() {
+        stop_tx.send(true).ok();
+        task.await.ok();
+    }
+
+    let elapsed = start.elapsed();
 
     if json {
         output::print_findings_json(&findings)?;
     } else {
-        output::print_findings(&findings, elapsed, &model);
+        output::print_summary(&findings, elapsed, &model);
     }
 
     // Save to history

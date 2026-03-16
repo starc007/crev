@@ -81,13 +81,8 @@ pub async fn stream_completion(
             }
             if let Ok(chunk) = serde_json::from_str::<GenerateChunk>(line) {
                 on_token(&chunk.response);
-                // Print token to stdout in real time
-                print!("{}", chunk.response);
-                use std::io::Write;
-                let _ = std::io::stdout().flush();
                 full_response.push_str(&chunk.response);
                 if chunk.done {
-                    println!(); // newline after streaming
                     break;
                 }
             }
