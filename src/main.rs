@@ -539,21 +539,52 @@ fn run_update() -> Result<()> {
 fn print_ci_workflow() {
     // Note: ${{ }} expressions are GitHub Actions syntax — they stay as-is in the output.
     let workflow = r#"# Save as .github/workflows/crev.yml
-# Required secret: ANTHROPIC_API_KEY  (repo Settings → Secrets and variables → Actions)
-# To use OpenAI instead: set OPENAI_API_KEY and change --model to gpt-4o
+# Required secret: set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY
+# in repo Settings → Secrets and variables → Actions, then update the env + --model below.
+#
+# Triggers:
+#   - Automatically on PR open
+#   - On demand: comment '/crev' on any PR to re-run
 name: crev code review
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened]
+  issue_comment:
+    types: [created]
+
 jobs:
   review:
     runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'pull_request' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request != null &&
+       github.event.comment.body == '/crev')
     permissions:
       pull-requests: write
     steps:
+      - name: Resolve PR metadata
+        id: pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "number=${{ github.event.pull_request.number }}"   >> $GITHUB_OUTPUT
+            echo "base=${{ github.event.pull_request.base.sha }}"   >> $GITHUB_OUTPUT
+            echo "head=${{ github.sha }}"                           >> $GITHUB_OUTPUT
+          else
+            PR=$(gh api repos/${{ github.repository }}/pulls \
+              --jq ".[] | select(.number == ${{ github.event.issue.number }}) | {number:.number,base:.base.sha,head:.head.sha}" \
+              | head -1)
+            echo "number=${{ github.event.issue.number }}"          >> $GITHUB_OUTPUT
+            echo "base=$(echo $PR | jq -r .base)"                   >> $GITHUB_OUTPUT
+            echo "head=$(echo $PR | jq -r .head)"                   >> $GITHUB_OUTPUT
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head }}
 
       - name: Install crev
         run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
@@ -563,21 +594,26 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
           crev review \
-            --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
-            --model claude-sonnet-4-5 \
+            --commits ${{ steps.pr.outputs.base }}..${{ steps.pr.outputs.head }} \
+            --model claude-sonnet-4-6 \
             --json > findings.json
 
       - name: Post findings to PR
         if: always()
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PR_NUMBER: ${{ steps.pr.outputs.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
           python3 << 'PYEOF'
           import json, subprocess, os, sys
 
-          with open('findings.json') as f:
-              data = json.load(f)
+          # Load findings — guard against missing/broken file
+          try:
+              with open('findings.json') as f:
+                  data = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              data = {'findings': [], 'github_annotations': []}
 
           # Emit inline annotations on the PR diff
           for a in data.get('github_annotations', []):
@@ -586,7 +622,7 @@ jobs:
               )
               print(f"::{level} file={a['path']},line={a['start_line']}::{a['message']}")
 
-          # Build a summary PR comment
+          # Build summary comment body
           findings = data.get('findings', [])
           high = [f for f in findings if f['severity'] == 'High']
           med  = [f for f in findings if f['severity'] == 'Med']
@@ -609,8 +645,27 @@ jobs:
               lines.append(f'\n_{", ".join(counts)} \u00b7 powered by [crev](https://github.com/starc007/crev)_')
               body = '\n'.join(lines)
 
-          pr = os.environ.get('PR_NUMBER')
-          if pr:
+          # Post or update comment — no spam on repeated triggers
+          pr   = os.environ.get('PR_NUMBER')
+          repo = os.environ.get('GITHUB_REPOSITORY')
+          if not pr or not repo:
+              sys.exit(0)
+
+          result = subprocess.run(
+              ['gh', 'api', f'repos/{repo}/issues/{pr}/comments',
+               '--jq', '.[] | select(.body | startswith("**crev")) | .id'],
+              capture_output=True, text=True
+          )
+          comment_id = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+
+          if comment_id:
+              subprocess.run(
+                  ['gh', 'api', '--method', 'PATCH',
+                   f'repos/{repo}/issues/comments/{comment_id}',
+                   '-f', f'body={body}'],
+                  check=False
+              )
+          else:
               subprocess.run(
                   ['gh', 'pr', 'comment', pr, '--body', body],
                   check=False
@@ -621,8 +676,11 @@ jobs:
         run: |
           python3 -c "
           import json, sys
-          with open('findings.json') as f:
-              d = json.load(f)
+          try:
+              with open('findings.json') as f:
+                  d = json.load(f)
+          except (FileNotFoundError, json.JSONDecodeError):
+              sys.exit(0)
           high = [x for x in d.get('findings', []) if x['severity'] == 'High']
           if high:
               print(f'Blocking merge: {len(high)} HIGH finding(s)')
