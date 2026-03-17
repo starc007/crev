@@ -62,7 +62,7 @@ pub async fn resolve(
             Ok((Box::new(OpenAiBackend::new(model.clone())?) as Box<dyn LlmBackend>, model))
         }
         Backend::Gemini => {
-            let model = requested_model.unwrap_or("gemini-1.5-pro").to_string();
+            let model = requested_model.unwrap_or("gemini-3.1-flash-lite-preview").to_string();
             Ok((Box::new(GeminiBackend::new(model.clone())?) as Box<dyn LlmBackend>, model))
         }
     }
