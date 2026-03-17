@@ -1,0 +1,798 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>crev — logo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap" rel="stylesheet">
+<style>
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: #05070d;
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 80px;
+    padding: 80px 48px;
+  }
+
+  body::before {
+    content: '';
+    position: fixed;
+    top: 25%;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 600px;
+    height: 300px;
+    background: radial-gradient(ellipse, rgba(42,255,143,0.04) 0%, transparent 70%);
+    pointer-events: none;
+  }
+
+  .label {
+    font-size: 10px;
+    letter-spacing: 0.25em;
+    text-transform: uppercase;
+    color: #182030;
+    margin-bottom: 18px;
+    text-align: center;
+  }
+
+  .group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    z-index: 1;
+  }
+
+  .canvas {
+    background: #07090f;
+    border: 1px solid #0d1422;
+    border-radius: 28px;
+    padding: 56px 72px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .canvas::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse at 25% 35%, rgba(42,255,143,0.025) 0%, transparent 50%),
+      radial-gradient(ellipse at 80% 75%, rgba(60,120,255,0.018) 0%, transparent 45%);
+    pointer-events: none;
+  }
+
+  .canvas-light {
+    background: #ecf0fa;
+    border: 1px solid #dde4f0;
+    border-radius: 28px;
+    padding: 56px 72px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .lockup {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    z-index: 1;
+    position: relative;
+  }
+
+  .lockup-text {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+
+  .wordmark {
+    font-size: 48px;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    line-height: 1;
+    color: #dce8f8;
+  }
+
+  .wordmark .c { color: #2aff8f; }
+
+  .tagline {
+    font-size: 10.5px;
+    color: #182a42;
+    letter-spacing: 0.12em;
+  }
+
+  .canvas-light .wordmark { color: #0c1524; }
+  .canvas-light .wordmark .c { color: #00b058; }
+  .canvas-light .tagline { color: #7d96b6; }
+
+  .sizes-row {
+    display: flex;
+    align-items: flex-end;
+    gap: 40px;
+    z-index: 1;
+    position: relative;
+  }
+
+  .size-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .size-label {
+    font-size: 9px;
+    letter-spacing: 0.2em;
+    color: #182030;
+  }
+
+  .export-row {
+    display: flex;
+    gap: 8px;
+    margin-top: 14px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .btn {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    padding: 6px 14px;
+    border-radius: 7px;
+    border: 1px solid #141e30;
+    background: #0a1020;
+    color: #2a3d58;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-transform: uppercase;
+  }
+
+  .btn:hover {
+    border-color: rgba(42,255,143,0.25);
+    color: #2aff8f;
+    background: #091a10;
+  }
+</style>
+</head>
+<body>
+
+<!-- ═══ PRIMARY ═══ -->
+<div class="group">
+  <div class="label">Primary lockup</div>
+  <div class="canvas">
+    <div class="lockup">
+      <svg id="icon-main" width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="m-bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#111c32"/>
+            <stop offset="100%" stop-color="#080d1a"/>
+          </linearGradient>
+          <radialGradient id="m-inner" cx="42%" cy="40%" r="58%">
+            <stop offset="0%" stop-color="#183050" stop-opacity="0.55"/>
+            <stop offset="100%" stop-color="#080d1a" stop-opacity="0"/>
+          </radialGradient>
+          <linearGradient id="m-chevron" x1="28" y1="24" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#5dffb8"/>
+            <stop offset="100%" stop-color="#12e070"/>
+          </linearGradient>
+          <!-- outer glow for chevron -->
+          <filter id="m-glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+            <feColorMatrix in="blur" type="matrix"
+              values="0 0 0 0 0.2
+                      0 0 0 0 1
+                      0 0 0 0 0.55
+                      0 0 0 0.6 0" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+          <!-- ring glow -->
+          <filter id="m-ring-glow" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="1.5" result="blur"/>
+            <feMerge>
+              <feMergeNode in="blur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+
+        <!-- base -->
+        <rect width="80" height="80" rx="20" fill="url(#m-bg)"/>
+        <rect width="80" height="80" rx="20" fill="url(#m-inner)"/>
+        <!-- fine border -->
+        <rect x="0.75" y="0.75" width="78.5" height="78.5" rx="19.25"
+              stroke="#2aff8f" stroke-opacity="0.09" stroke-width="1.5"/>
+
+        <!-- abstract partial ring — 300° arc, gap opens toward chevron tip -->
+        <!-- arc from (64.2, 26) counterclockwise 300° to (64.2, 54) -->
+        <path d="M 64.2,26 A 28,28 0 1,0 64.2,54"
+              stroke="#2aff8f" stroke-opacity="0.18" stroke-width="1.25"
+              fill="none" stroke-linecap="round"
+              filter="url(#m-ring-glow)"/>
+
+        <!-- second inner ring — dashed, more abstract -->
+        <circle cx="40" cy="40" r="18"
+                stroke="#3a80ff" stroke-opacity="0.10" stroke-width="1"
+                fill="none" stroke-dasharray="3 4"
+                stroke-dashoffset="1"/>
+
+        <!-- centered chevron — custom path, mathematically centered -->
+        <path d="M 27,23 L 53,40 L 27,57"
+              stroke="url(#m-chevron)"
+              stroke-width="6.5"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              fill="none"
+              filter="url(#m-glow)"/>
+      </svg>
+
+      <div class="lockup-text">
+        <div class="wordmark"><span class="c">c</span>rev</div>
+        <div class="tagline">ai code review · local-first</div>
+      </div>
+    </div>
+  </div>
+  <div class="export-row">
+    <button class="btn" onclick="exportSVG('lockup-svg','crev-lockup', this)">↓ svg</button>
+    <button class="btn" onclick="exportLockupPNG(640)">↓ png 640</button>
+    <button class="btn" onclick="exportLockupPNG(1280)">↓ png 1280</button>
+    <button class="btn" onclick="exportSVG('icon-main','crev-icon', this)">↓ svg icon only</button>
+    <button class="btn" onclick="exportPNG('icon-main','crev-icon',512)">↓ png icon 512</button>
+  </div>
+</div>
+
+<!-- ═══ LIGHT ═══ -->
+<div class="group">
+  <div class="label">Light background</div>
+  <div class="canvas-light">
+    <div class="lockup">
+      <svg id="icon-light" width="80" height="80" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="l-bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#111c32"/>
+            <stop offset="100%" stop-color="#080d1a"/>
+          </linearGradient>
+          <radialGradient id="l-inner" cx="42%" cy="40%" r="58%">
+            <stop offset="0%" stop-color="#183050" stop-opacity="0.55"/>
+            <stop offset="100%" stop-color="#080d1a" stop-opacity="0"/>
+          </radialGradient>
+          <linearGradient id="l-chev" x1="28" y1="24" x2="52" y2="56" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#5dffb8"/>
+            <stop offset="100%" stop-color="#12e070"/>
+          </linearGradient>
+          <filter id="l-glow" x="-60%" y="-60%" width="220%" height="220%">
+            <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+            <feColorMatrix in="blur" type="matrix"
+              values="0 0 0 0 0.2  0 0 0 0 1  0 0 0 0 0.55  0 0 0 0.6 0" result="coloredBlur"/>
+            <feMerge><feMergeNode in="coloredBlur"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+          <filter id="l-rg" x="-30%" y="-30%" width="160%" height="160%">
+            <feGaussianBlur stdDeviation="1.5" result="b"/>
+            <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+          </filter>
+        </defs>
+        <rect width="80" height="80" rx="20" fill="url(#l-bg)"/>
+        <rect width="80" height="80" rx="20" fill="url(#l-inner)"/>
+        <rect x="0.75" y="0.75" width="78.5" height="78.5" rx="19.25" stroke="#2aff8f" stroke-opacity="0.1" stroke-width="1.5"/>
+        <path d="M 64.2,26 A 28,28 0 1,0 64.2,54" stroke="#2aff8f" stroke-opacity="0.2" stroke-width="1.25" fill="none" stroke-linecap="round" filter="url(#l-rg)"/>
+        <circle cx="40" cy="40" r="18" stroke="#3a80ff" stroke-opacity="0.12" stroke-width="1" fill="none" stroke-dasharray="3 4"/>
+        <path d="M 27,23 L 53,40 L 27,57" stroke="url(#l-chev)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#l-glow)"/>
+      </svg>
+      <div class="lockup-text">
+        <div class="wordmark"><span class="c">c</span>rev</div>
+        <div class="tagline">ai code review · local-first</div>
+      </div>
+    </div>
+  </div>
+  <div class="export-row">
+    <button class="btn" onclick="exportSVG('icon-light','crev-icon-light', this)">↓ svg icon</button>
+    <button class="btn" onclick="exportPNG('icon-light','crev-icon-light',256)">↓ png 256</button>
+    <button class="btn" onclick="exportPNG('icon-light','crev-icon-light',512)">↓ png 512</button>
+  </div>
+</div>
+
+<!-- ═══ ICON SIZES ═══ -->
+<div class="group">
+  <div class="label">Icon sizes</div>
+  <div class="canvas">
+    <div class="sizes-row">
+
+      <div class="size-item">
+        <svg width="128" height="128" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="z1bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#111c32"/><stop offset="100%" stop-color="#080d1a"/></linearGradient>
+            <radialGradient id="z1in" cx="42%" cy="40%" r="58%"><stop offset="0%" stop-color="#183050" stop-opacity="0.55"/><stop offset="100%" stop-color="#080d1a" stop-opacity="0"/></radialGradient>
+            <linearGradient id="z1ch" x1="28" y1="24" x2="52" y2="56" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#5dffb8"/><stop offset="100%" stop-color="#12e070"/></linearGradient>
+            <filter id="z1g" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/><feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.6 0" result="cb"/><feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+            <filter id="z1rg" x="-30%" y="-30%" width="160%" height="160%"><feGaussianBlur stdDeviation="1.5" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <rect width="80" height="80" rx="20" fill="url(#z1bg)"/>
+          <rect width="80" height="80" rx="20" fill="url(#z1in)"/>
+          <rect x="0.75" y="0.75" width="78.5" height="78.5" rx="19.25" stroke="#2aff8f" stroke-opacity="0.09" stroke-width="1.5"/>
+          <path d="M 64.2,26 A 28,28 0 1,0 64.2,54" stroke="#2aff8f" stroke-opacity="0.18" stroke-width="1.25" fill="none" stroke-linecap="round" filter="url(#z1rg)"/>
+          <circle cx="40" cy="40" r="18" stroke="#3a80ff" stroke-opacity="0.10" stroke-width="1" fill="none" stroke-dasharray="3 4"/>
+          <path d="M 27,23 L 53,40 L 27,57" stroke="url(#z1ch)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#z1g)"/>
+        </svg>
+        <span class="size-label">128px</span>
+      </div>
+
+      <div class="size-item">
+        <svg width="64" height="64" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <linearGradient id="z2bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#111c32"/><stop offset="100%" stop-color="#080d1a"/></linearGradient>
+            <linearGradient id="z2ch" x1="28" y1="24" x2="52" y2="56" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#5dffb8"/><stop offset="100%" stop-color="#12e070"/></linearGradient>
+            <filter id="z2g" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/><feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.6 0" result="cb"/><feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+          </defs>
+          <rect width="80" height="80" rx="20" fill="url(#z2bg)"/>
+          <rect x="0.75" y="0.75" width="78.5" height="78.5" rx="19.25" stroke="#2aff8f" stroke-opacity="0.09" stroke-width="1.5"/>
+          <path d="M 64.2,26 A 28,28 0 1,0 64.2,54" stroke="#2aff8f" stroke-opacity="0.18" stroke-width="1.25" fill="none" stroke-linecap="round"/>
+          <circle cx="40" cy="40" r="18" stroke="#3a80ff" stroke-opacity="0.10" stroke-width="1" fill="none" stroke-dasharray="3 4"/>
+          <path d="M 27,23 L 53,40 L 27,57" stroke="url(#z2ch)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#z2g)"/>
+        </svg>
+        <span class="size-label">64px</span>
+      </div>
+
+      <div class="size-item">
+        <svg width="40" height="40" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="80" rx="20" fill="#0f1828"/>
+          <path d="M 64.2,26 A 28,28 0 1,0 64.2,54" stroke="#2aff8f" stroke-opacity="0.2" stroke-width="1.5" fill="none" stroke-linecap="round"/>
+          <path d="M 27,23 L 53,40 L 27,57" stroke="#2aff8f" stroke-width="7" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        </svg>
+        <span class="size-label">40px</span>
+      </div>
+
+      <div class="size-item">
+        <svg width="24" height="24" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="80" rx="20" fill="#0f1828"/>
+          <path d="M 27,23 L 53,40 L 27,57" stroke="#2aff8f" stroke-width="8" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        </svg>
+        <span class="size-label">24px</span>
+      </div>
+
+      <div class="size-item">
+        <svg width="16" height="16" viewBox="0 0 80 80" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="80" height="80" rx="20" fill="#0f1828"/>
+          <path d="M 27,23 L 53,40 L 27,57" stroke="#2aff8f" stroke-width="9" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+        </svg>
+        <span class="size-label">16px</span>
+      </div>
+
+    </div>
+  </div>
+  <div class="export-row">
+    <button class="btn" onclick="exportAllSizes()">↓ export all sizes png</button>
+  </div>
+</div>
+
+<!-- ═══ WORDMARK ═══ -->
+<div class="group">
+  <div class="label">Wordmark</div>
+  <div class="canvas">
+    <svg id="wm-svg" width="240" height="56" viewBox="0 0 240 56" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="wm-c" x1="0" y1="0" x2="0" y2="56" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#5dffb8"/>
+          <stop offset="100%" stop-color="#12e070"/>
+        </linearGradient>
+        <filter id="wm-g" x="-10%" y="-30%" width="120%" height="160%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="3" result="blur"/>
+          <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.5 0" result="cb"/>
+          <feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+      <!-- the c in accent color with glow -->
+      <text x="0" y="44" font-family="'JetBrains Mono', monospace" font-size="44" font-weight="800" fill="url(#wm-c)" filter="url(#wm-g)">c</text>
+      <!-- rev in white -->
+      <text x="30" y="44" font-family="'JetBrains Mono', monospace" font-size="44" font-weight="800" letter-spacing="-0.5" fill="#dce8f8">rev</text>
+      <!-- blinking cursor -->
+      <rect x="206" y="47" width="16" height="4" rx="2" fill="#2aff8f" opacity="0.5">
+        <animate attributeName="opacity" values="0.5;0.05;0.5" dur="1.1s" repeatCount="indefinite"/>
+      </rect>
+    </svg>
+  </div>
+  <div class="export-row">
+    <button class="btn" onclick="exportSVG('wm-svg','crev-wordmark', this)">↓ svg</button>
+    <button class="btn" onclick="exportPNG('wm-svg','crev-wordmark',480)">↓ png 480</button>
+    <button class="btn" onclick="exportPNG('wm-svg','crev-wordmark',960)">↓ png 960</button>
+  </div>
+</div>
+
+<!-- ═══ BANNER ═══ -->
+<div class="group">
+  <div class="label">Social banner</div>
+  <div class="canvas" style="padding:44px 60px;">
+    <svg id="banner-svg" width="480" height="200" viewBox="0 0 480 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="bn-bg" x1="0" y1="0" x2="480" y2="200" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#0d1525"/>
+          <stop offset="100%" stop-color="#060911"/>
+        </linearGradient>
+        <radialGradient id="bn-glow1" cx="22%" cy="50%" r="35%">
+          <stop offset="0%" stop-color="#2aff8f" stop-opacity="0.06"/>
+          <stop offset="100%" stop-color="#2aff8f" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="bn-glow2" cx="78%" cy="50%" r="30%">
+          <stop offset="0%" stop-color="#3a80ff" stop-opacity="0.04"/>
+          <stop offset="100%" stop-color="#3a80ff" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="bn-icon-bg" x1="24" y1="28" x2="152" y2="172" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#111c35"/>
+          <stop offset="100%" stop-color="#080d1c"/>
+        </linearGradient>
+        <radialGradient id="bn-icon-inner" cx="40%" cy="38%" r="58%">
+          <stop offset="0%" stop-color="#183050" stop-opacity="0.6"/>
+          <stop offset="100%" stop-color="#080d1c" stop-opacity="0"/>
+        </radialGradient>
+        <linearGradient id="bn-chev" x1="64" y1="72" x2="130" y2="128" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#5dffb8"/>
+          <stop offset="100%" stop-color="#12e070"/>
+        </linearGradient>
+        <filter id="bn-cglow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="5" result="blur"/>
+          <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.55 0" result="cb"/>
+          <feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <filter id="bn-rg" x="-30%" y="-30%" width="160%" height="160%">
+          <feGaussianBlur stdDeviation="2" result="b"/>
+          <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+        <linearGradient id="bn-wm-c" x1="0" y1="0" x2="0" y2="200" gradientUnits="userSpaceOnUse">
+          <stop offset="0%" stop-color="#5dffb8"/>
+          <stop offset="100%" stop-color="#12e070"/>
+        </linearGradient>
+        <filter id="bn-wm-g" x="-10%" y="-30%" width="120%" height="160%">
+          <feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/>
+          <feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.45 0" result="cb"/>
+          <feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge>
+        </filter>
+      </defs>
+
+      <!-- background -->
+      <rect width="480" height="200" fill="url(#bn-bg)"/>
+      <rect width="480" height="200" fill="url(#bn-glow1)"/>
+      <rect width="480" height="200" fill="url(#bn-glow2)"/>
+
+      <!-- icon box -->
+      <rect x="28" y="28" width="144" height="144" rx="28" fill="url(#bn-icon-bg)"/>
+      <rect x="28" y="28" width="144" height="144" rx="28" fill="url(#bn-icon-inner)"/>
+      <rect x="28.75" y="28.75" width="142.5" height="142.5" rx="27.25"
+            stroke="#2aff8f" stroke-opacity="0.09" stroke-width="1.5"/>
+
+      <!-- abstract ring inside icon — 300° arc -->
+      <!-- center (100,100), r=46 -->
+      <!-- gap at right: from angle 30° to -30° -->
+      <!-- pt at 30°: (100+46*cos30, 100-46*sin30) = (100+39.8, 100-23) = (139.8, 77) -->
+      <!-- pt at -30°: (100+39.8, 100+23) = (139.8, 123) -->
+      <path d="M 139.8,77 A 46,46 0 1,0 139.8,123"
+            stroke="#2aff8f" stroke-opacity="0.16" stroke-width="1.5"
+            fill="none" stroke-linecap="round" filter="url(#bn-rg)"/>
+
+      <!-- inner dashed ring: r=30 -->
+      <circle cx="100" cy="100" r="30"
+              stroke="#3a80ff" stroke-opacity="0.10" stroke-width="1.2"
+              fill="none" stroke-dasharray="4 5"/>
+
+      <!-- icon chevron centered at (100,100) -->
+      <path d="M 76,72 L 124,100 L 76,128"
+            stroke="url(#bn-chev)"
+            stroke-width="10"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            fill="none"
+            filter="url(#bn-cglow)"/>
+
+      <!-- divider line -->
+      <line x1="196" y1="52" x2="196" y2="148" stroke="#0f1e34" stroke-width="1"/>
+
+      <!-- wordmark -->
+      <text x="214" y="116"
+            font-family="'JetBrains Mono', monospace"
+            font-size="64"
+            font-weight="800"
+            letter-spacing="-1.5"
+            fill="url(#bn-wm-c)"
+            filter="url(#bn-wm-g)">c</text>
+      <text x="254" y="116"
+            font-family="'JetBrains Mono', monospace"
+            font-size="64"
+            font-weight="800"
+            letter-spacing="-1.5"
+            fill="#dde9fa">rev</text>
+
+      <!-- tagline -->
+      <text x="216" y="140"
+            font-family="'JetBrains Mono', monospace"
+            font-size="12"
+            font-weight="400"
+            fill="#182a40"
+            letter-spacing="2.5">AI CODE REVIEW · LOCAL-FIRST</text>
+    </svg>
+  </div>
+  <div class="export-row">
+    <button class="btn" onclick="exportSVG('banner-svg','crev-banner', this)">↓ svg</button>
+    <button class="btn" onclick="exportPNG('banner-svg','crev-banner',480)">↓ png 480</button>
+    <button class="btn" onclick="exportPNG('banner-svg','crev-banner',960)">↓ png 960</button>
+    <button class="btn" onclick="exportPNG('banner-svg','crev-banner',1440)">↓ png 1440</button>
+  </div>
+</div>
+
+<div style="font-size:10px; color:#101828; letter-spacing:0.15em; z-index:1;">docs/logo.html</div>
+
+<!-- hidden lockup for export -->
+<svg id="lockup-svg" width="320" height="80" viewBox="0 0 320 80" fill="none" xmlns="http://www.w3.org/2000/svg" style="position:absolute;left:-9999px;">
+  <defs>
+    <linearGradient id="lk-bg" x1="0" y1="0" x2="80" y2="80" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#111c32"/><stop offset="100%" stop-color="#080d1a"/></linearGradient>
+    <radialGradient id="lk-in" cx="42%" cy="40%" r="58%"><stop offset="0%" stop-color="#183050" stop-opacity="0.55"/><stop offset="100%" stop-color="#080d1a" stop-opacity="0"/></radialGradient>
+    <linearGradient id="lk-ch" x1="28" y1="24" x2="52" y2="56" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#5dffb8"/><stop offset="100%" stop-color="#12e070"/></linearGradient>
+    <filter id="lk-g" x="-60%" y="-60%" width="220%" height="220%"><feGaussianBlur in="SourceGraphic" stdDeviation="4" result="blur"/><feColorMatrix in="blur" type="matrix" values="0 0 0 0 0.2 0 0 0 0 1 0 0 0 0 0.55 0 0 0 0.6 0" result="cb"/><feMerge><feMergeNode in="cb"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+    <linearGradient id="lk-wc" x1="0" y1="0" x2="0" y2="80" gradientUnits="userSpaceOnUse"><stop offset="0%" stop-color="#5dffb8"/><stop offset="100%" stop-color="#12e070"/></linearGradient>
+  </defs>
+  <rect width="80" height="80" rx="20" fill="url(#lk-bg)"/>
+  <rect width="80" height="80" rx="20" fill="url(#lk-in)"/>
+  <rect x="0.75" y="0.75" width="78.5" height="78.5" rx="19.25" stroke="#2aff8f" stroke-opacity="0.09" stroke-width="1.5"/>
+  <path d="M 64.2,26 A 28,28 0 1,0 64.2,54" stroke="#2aff8f" stroke-opacity="0.18" stroke-width="1.25" fill="none" stroke-linecap="round"/>
+  <circle cx="40" cy="40" r="18" stroke="#3a80ff" stroke-opacity="0.10" stroke-width="1" fill="none" stroke-dasharray="3 4"/>
+  <path d="M 27,23 L 53,40 L 27,57" stroke="url(#lk-ch)" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" fill="none" filter="url(#lk-g)"/>
+  <text x="94" y="50" font-family="'JetBrains Mono', monospace" font-size="42" font-weight="800" fill="url(#lk-wc)">c</text>
+  <text x="122" y="50" font-family="'JetBrains Mono', monospace" font-size="42" font-weight="800" letter-spacing="-1" fill="#dce8f8">rev</text>
+  <text x="96" y="65" font-family="'JetBrains Mono', monospace" font-size="10" fill="#182a42" letter-spacing="1.5">ai code review · local-first</text>
+</svg>
+
+<script>
+// ── Safe ArrayBuffer → base64 (chunked — avoids stack overflow on large files) ──
+function bufToBase64(buf) {
+  const bytes = new Uint8Array(buf);
+  let out = '';
+  for (let i = 0; i < bytes.length; i += 8192)
+    out += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+  return btoa(out);
+}
+
+// ── Font cache ──────────────────────────────────────────────────────────────
+// Only needed for PNG export (canvas can't use page-loaded fonts).
+// Fetches ONE weight (800) with a hard 5 s timeout per request.
+let _fontCss = null;
+
+async function loadFont() {
+  if (_fontCss !== null) return _fontCss; // '' means already tried & failed
+  _fontCss = '';                          // mark as attempted
+
+  const get = (url, opts = {}) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 5000);
+    return fetch(url, { ...opts, signal: ctrl.signal })
+      .finally(() => clearTimeout(t));
+  };
+
+  try {
+    const css = await (await get(
+      'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@800',
+      { headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120' } }
+    )).text();
+
+    const m = css.match(/url\(([^)]+\.woff2[^)]*)\)/);
+    if (!m) return '';
+    const fontUrl = m[1].replace(/['"]/g, '');
+    const buf = await (await get(fontUrl)).arrayBuffer();
+    const b64 = bufToBase64(buf);
+    _fontCss = `@font-face{font-family:'JetBrains Mono';font-weight:800;src:url('data:font/woff2;base64,${b64}') format('woff2');}`;
+    return _fontCss;
+  } catch (e) {
+    console.warn('Font fetch failed (will use fallback):', e.message);
+    return '';
+  }
+}
+
+// ── Clone SVG and inject font into <defs> (PNG export only) ─────────────────
+async function cloneForPNG(svgEl) {
+  const clone = svgEl.cloneNode(true);
+  clone.querySelectorAll('animate').forEach(a => a.remove());
+  clone.querySelectorAll('[filter]').forEach(n => n.removeAttribute('filter'));
+  clone.setAttribute('xmlns',       'http://www.w3.org/2000/svg');
+  clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+
+  const css = await loadFont();
+  if (css) {
+    const ns = 'http://www.w3.org/2000/svg';
+    let defs = clone.querySelector('defs');
+    if (!defs) { defs = document.createElementNS(ns, 'defs'); clone.insertBefore(defs, clone.firstChild); }
+    const style = document.createElementNS(ns, 'style');
+    style.textContent = css;
+    defs.insertBefore(style, defs.firstChild);
+  }
+  return clone;
+}
+
+// ── Button loading state ─────────────────────────────────────────────────────
+function btnLoading(btn, on) {
+  if (!btn) return;
+  if (on && !btn._label) btn._label = btn.textContent;
+  btn.disabled = on;
+  btn.style.color       = on ? '#2aff8f' : '';
+  btn.style.borderColor = on ? 'rgba(42,255,143,0.3)' : '';
+  btn.textContent = on ? '…' : (btn._label || btn.textContent);
+}
+
+// ── SVG export — no font embedding needed; SVG viewers handle fonts ──────────
+function exportSVG(id, filename, btn) {
+  if (!btn._label) btn._label = btn.textContent;
+  const el    = document.getElementById(id);
+  const clone = el.cloneNode(true);
+  clone.querySelectorAll('animate').forEach(a => a.remove());
+  clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  const str = new XMLSerializer().serializeToString(clone);
+  dl(URL.createObjectURL(new Blob([str], { type: 'image/svg+xml' })), filename + '.svg');
+}
+
+// ── PNG export ───────────────────────────────────────────────────────────────
+// pxWidth = target output width in pixels (height computed from aspect ratio)
+async function exportPNG(id, filename, pxWidth) {
+  const btn = event?.currentTarget;
+  if (btn && !btn._label) btn._label = btn.textContent;
+  btnLoading(btn, true);
+
+  const el    = document.getElementById(id);
+  const clone = await cloneForPNG(el);
+
+  const vb   = el.viewBox.baseVal;
+  const natW = vb.width  || +el.getAttribute('width');
+  const natH = vb.height || +el.getAttribute('height');
+  const w    = Math.round(pxWidth);
+  const h    = Math.round(natH * (pxWidth / natW));
+
+  // Required for standalone SVG rendering
+  clone.setAttribute('xmlns',       'http://www.w3.org/2000/svg');
+  clone.setAttribute('xmlns:xlink', 'http://www.w3.org/1999/xlink');
+  clone.setAttribute('width',  w);
+  clone.setAttribute('height', h);
+
+  // Only strip filter refs — feGaussianBlur/feColorMatrix in a standalone
+  // SVG-as-image causes blank output in Safari. Gradient stroke/fill url()
+  // refs are self-contained in the SVG's own <defs> and resolve fine.
+  clone.querySelectorAll('[filter]').forEach(n => n.removeAttribute('filter'));
+
+  const svgStr = '<?xml version="1.0" encoding="UTF-8"?>\n'
+               + new XMLSerializer().serializeToString(clone);
+  const blob   = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
+  const url    = URL.createObjectURL(blob);
+
+  const img  = new Image();
+  img.src    = url;
+
+  // img.decode() waits until the image is fully composited, not just parsed.
+  // Without this, drawImage() on a complex SVG often produces a blank canvas.
+  try {
+    await img.decode();
+  } catch (e) {
+    alert('SVG failed to decode:\n' + e.message);
+    URL.revokeObjectURL(url);
+    btnLoading(btn, false);
+    return;
+  }
+
+  const c   = document.createElement('canvas');
+  c.width   = w;
+  c.height  = h;
+  // Pass explicit dest dimensions so the SVG viewport maps 1:1 to canvas
+  c.getContext('2d').drawImage(img, 0, 0, w, h);
+  URL.revokeObjectURL(url);
+
+  c.toBlob(pngBlob => {
+    if (!pngBlob || pngBlob.size < 200) {
+      alert('Canvas appears blank. Open this file via a local server:\n  npx serve docs');
+    } else {
+      dl(URL.createObjectURL(pngBlob), `${filename}-${w}x${h}.png`);
+    }
+    btnLoading(btn, false);
+  }, 'image/png');
+}
+
+// ── Lockup PNG — canvas-based (uses page-loaded fonts, no SVG text issues) ──
+async function exportLockupPNG(pxWidth) {
+  const btn = event?.currentTarget;
+  if (btn && !btn._label) btn._label = btn.textContent;
+  btnLoading(btn, true);
+
+  await document.fonts.ready; // ensure JetBrains Mono is loaded
+
+  const scale  = pxWidth / 320;
+  const iconPx = Math.round(80  * scale);
+  const W      = pxWidth;
+  const H      = Math.round(80  * scale);
+
+  // Render icon SVG to image (no text, no filter issues)
+  const iconEl    = document.getElementById('icon-main');
+  const iconClone = iconEl.cloneNode(true);
+  iconClone.querySelectorAll('animate,[filter]').forEach(n =>
+    n.hasAttribute('filter') ? n.removeAttribute('filter') : n.remove());
+  iconClone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
+  iconClone.setAttribute('width',  iconPx);
+  iconClone.setAttribute('height', iconPx);
+
+  const iconBlob = new Blob([new XMLSerializer().serializeToString(iconClone)],
+                            { type: 'image/svg+xml' });
+  const iconUrl  = URL.createObjectURL(iconBlob);
+  const iconImg  = new Image();
+  iconImg.src    = iconUrl;
+  try { await iconImg.decode(); } catch(e) {}
+  URL.revokeObjectURL(iconUrl);
+
+  // Compose on canvas
+  const c   = document.createElement('canvas');
+  c.width   = W;
+  c.height  = H;
+  const ctx = c.getContext('2d');
+
+  // Background
+  ctx.fillStyle = '#07090f';
+  ctx.fillRect(0, 0, W, H);
+
+  // Icon
+  ctx.drawImage(iconImg, 0, 0, iconPx, iconPx);
+
+  // Text — drawn with Canvas 2D using page-loaded JetBrains Mono
+  const textX = Math.round((80 + 20) * scale);
+  const textY = Math.round(51 * scale);
+  const fs    = Math.round(44 * scale);
+
+  ctx.font         = `800 ${fs}px "JetBrains Mono", monospace`;
+  ctx.letterSpacing = '0px';
+
+  // "c" accent
+  ctx.fillStyle = '#2aff8f';
+  ctx.fillText('c', textX, textY);
+  const cW = ctx.measureText('c').width;
+
+  // "rev"
+  ctx.fillStyle = '#dce8f8';
+  ctx.fillText('rev', textX + cW, textY);
+
+  // tagline
+  const tagFs = Math.round(10 * scale);
+  ctx.font      = `400 ${tagFs}px "JetBrains Mono", monospace`;
+  ctx.fillStyle = '#1e3050';
+  ctx.fillText('ai code review · local-first', textX + 2, Math.round(67 * scale));
+
+  c.toBlob(blob => {
+    if (blob && blob.size > 200) dl(URL.createObjectURL(blob), `crev-lockup-${W}x${H}.png`);
+    else alert('Export failed — open this file via a local server: npx serve docs');
+    btnLoading(btn, false);
+  }, 'image/png');
+}
+
+// ── Export all icon sizes ────────────────────────────────────────────────────
+async function exportAllSizes() {
+  const btn = event?.currentTarget;
+  if (btn && !btn._label) btn._label = btn.textContent;
+  btnLoading(btn, true);
+  for (const size of [16, 32, 64, 128, 256, 512]) {
+    await exportPNG('icon-main', `crev-icon`, size);
+    await new Promise(r => setTimeout(r, 80));
+  }
+  btnLoading(btn, false);
+}
+
+// Anchor must be in the DOM for Safari to trigger the download
+function dl(href, name) {
+  const a = Object.assign(document.createElement('a'), { href, download: name });
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { document.body.removeChild(a); }, 100);
+}
+</script>
+</body>
+</html>

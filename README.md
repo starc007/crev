@@ -1,4 +1,6 @@
-# crev
+<p align="center">
+  <img src="docs/logo.png" alt="crev" width="480" />
+</p>
 
 AI code review from the command line. Runs locally via Ollama or with any cloud LLM.
 
