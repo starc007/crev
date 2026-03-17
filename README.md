@@ -104,12 +104,13 @@ crev review --staged --security        # security-only scan
 Installs git hooks and creates a `.reviewrc` config in the repo root.
 
 ```sh
-crev init              # install hooks + create .reviewrc
-crev init --dry-run    # preview what would be installed
-crev init --force      # overwrite existing hooks
-crev init --hooks-only # skip .reviewrc creation
-crev init --uninstall  # remove hooks
-crev init --ci         # print a GitHub Actions workflow to stdout
+crev init                        # install hooks + create .reviewrc
+crev init --dry-run              # preview what would be installed
+crev init --force                # overwrite existing hooks
+crev init --hooks-only           # skip .reviewrc creation
+crev init --uninstall            # remove hooks
+crev init --ci                   # write .github/workflows/crev.yml
+crev init --ci --model gpt-4o   # same, with OpenAI model + correct secret name
 ```
 
 Installs two hooks:
@@ -133,6 +134,12 @@ History is stored at `~/Library/Application Support/crev/history.db` on macOS an
 ```sh
 crev config --show    # print effective config for current directory
 crev config --init    # create ~/.config/crev/config.toml with defaults
+```
+
+### `crev update`
+
+```sh
+crev update    # upgrade to the latest release
 ```
 
 ---
@@ -292,50 +299,44 @@ A spinner shows while the model analyzes. Each finding streams to the terminal a
 
 ## CI / GitHub Actions
 
-Get a ready-to-use workflow with one command:
+Write a ready-to-use workflow with one command:
 
 ```sh
-crev init --ci > .github/workflows/crev.yml
+crev init --ci                   # uses Claude (ANTHROPIC_API_KEY)
+crev init --ci --model gpt-4o   # uses OpenAI (OPENAI_API_KEY)
+crev init --ci --model gemini-2.0-flash  # uses Gemini (GEMINI_API_KEY)
 ```
 
-Then add your API key as a GitHub secret: **repo → Settings → Secrets and variables → Actions → New repository secret** → `ANTHROPIC_API_KEY`.
+This writes `.github/workflows/crev.yml` directly and prints the exact secret name to add:
 
-On every PR open or push, crev will:
-1. Review the diff between your branch and `main`
-2. Post each finding as an **inline comment on the PR diff**
-3. Post a summary comment on the PR thread
-4. **Block merge** if any HIGH findings exist
+```
+Created .github/workflows/crev.yml
 
-The generated workflow looks like:
+Add your API key as a repository secret:
+  Repo → Settings → Secrets and variables → Actions → New repository secret
+  Name: ANTHROPIC_API_KEY
 
-```yaml
-name: crev code review
-on:
-  pull_request:
-    types: [opened, synchronize]
-jobs:
-  review:
-    runs-on: ubuntu-latest
-    permissions:
-      pull-requests: write
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Install crev
-        run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
-      - name: Run crev review
-        env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        run: |
-          crev review \
-            --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
-            --model claude-sonnet-4-5 \
-            --json > findings.json
-      # ... posts inline annotations + PR comment, fails on HIGH
+Then commit and push:
+  git add .github/workflows/crev.yml
+  git commit -m "ci: add crev code review"
 ```
 
-To use OpenAI instead: set `OPENAI_API_KEY` as the secret and change `--model` to `gpt-4o`.
+**What happens on a PR:**
+
+1. PR opened → crev reviews the diff automatically
+2. Findings posted as **inline comments on the PR diff**
+3. A summary comment posted on the PR thread (updated in-place on re-runs — no spam)
+4. **Merge blocked** if any HIGH findings exist
+
+**Re-running manually:** comment `/crev` on any PR — the workflow triggers and updates the existing comment with fresh results.
+
+**Triggers:**
+
+| Event | Behaviour |
+|---|---|
+| PR opened | Runs automatically |
+| `/crev` comment | Runs on demand, reacts with 👀 to acknowledge |
+| Push to PR branch | Does not run — comment `/crev` to re-review |
 
 ---
 
