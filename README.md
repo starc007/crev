@@ -352,17 +352,6 @@ This surfaces systemic issues that keep slipping through code review.
 
 ---
 
-## Privacy
-
-- **Nothing leaves your machine by default.** The LLM runs locally via Ollama.
-- The diff is sent only to `localhost:11434`.
-- No telemetry, no accounts, no network requests outside Ollama.
-- When using a cloud backend, only the diff and context are sent — no repo metadata.
-- Use `strip_comments` and `strip_strings` in `.reviewrc` if the code contains sensitive data.
-- Use `--no-cloud` to hard-disable cloud fallback even if API keys are set.
-
----
-
 ## License
 
 HEHEHEHEHE
