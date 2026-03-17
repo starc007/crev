@@ -516,36 +516,98 @@ fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
 }
 
 fn print_ci_workflow() {
-    let workflow = concat!(
-        "# Save as .github/workflows/crev.yml\n",
-        "name: crev code review\n",
-        "on:\n",
-        "  pull_request:\n",
-        "    types: [opened, synchronize]\n",
-        "jobs:\n",
-        "  review:\n",
-        "    runs-on: ubuntu-latest\n",
-        "    steps:\n",
-        "      - uses: actions/checkout@v4\n",
-        "        with:\n",
-        "          fetch-depth: 0\n",
-        "      - name: Install crev\n",
-        "        run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh\n",
-        "      - name: Install Ollama\n",
-        "        run: curl -fsSL https://ollama.ai/install.sh | sh\n",
-        "      - name: Start Ollama\n",
-        "        run: ollama serve &\n",
-        "      - name: Pull model\n",
-        "        run: ollama pull qwen2.5-coder:7b\n",
-        "      - name: Run review\n",
-        "        run: |\n",
-        "          crev review --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} --json > findings.json\n",
-        "      - name: Post PR comment\n",
-        "        env:\n",
-        "          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}\n",
-        "        run: |\n",
-        "          python3 post_review.py\n",
-    );
+    // Note: ${{ }} expressions are GitHub Actions syntax — they stay as-is in the output.
+    let workflow = r#"# Save as .github/workflows/crev.yml
+# Required secret: ANTHROPIC_API_KEY  (repo Settings → Secrets and variables → Actions)
+# To use OpenAI instead: set OPENAI_API_KEY and change --model to gpt-4o
+name: crev code review
+on:
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install crev
+        run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
+
+      - name: Run crev review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          crev review \
+            --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
+            --model claude-sonnet-4-5 \
+            --json > findings.json
+
+      - name: Post findings to PR
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          python3 << 'PYEOF'
+          import json, subprocess, os, sys
+
+          with open('findings.json') as f:
+              data = json.load(f)
+
+          # Emit inline annotations on the PR diff
+          for a in data.get('github_annotations', []):
+              level = {'failure': 'error', 'warning': 'warning', 'notice': 'notice'}.get(
+                  a['annotation_level'], 'notice'
+              )
+              print(f"::{level} file={a['path']},line={a['start_line']}::{a['message']}")
+
+          # Build a summary PR comment
+          findings = data.get('findings', [])
+          high = [f for f in findings if f['severity'] == 'High']
+          med  = [f for f in findings if f['severity'] == 'Med']
+          low  = [f for f in findings if f['severity'] == 'Low']
+
+          if not findings or all(f['severity'] == 'Lgtm' for f in findings):
+              body = '**crev** \u2705 \u2014 no issues found'
+          else:
+              lines = ['**crev review**\n']
+              for f in high:
+                  lines.append(f"\U0001f534 **HIGH** `{f['file']}`:{f.get('line','?')} \u2014 {f['message']}")
+              for f in med:
+                  lines.append(f"\U0001f7e1 **MED**  `{f['file']}`:{f.get('line','?')} \u2014 {f['message']}")
+              for f in low:
+                  lines.append(f"\U0001f535 **LOW**  `{f['file']}`:{f.get('line','?')} \u2014 {f['message']}")
+              counts = []
+              if high: counts.append(f'{len(high)} high')
+              if med:  counts.append(f'{len(med)} med')
+              if low:  counts.append(f'{len(low)} low')
+              lines.append(f'\n_{", ".join(counts)} \u00b7 powered by [crev](https://github.com/starc007/crev)_')
+              body = '\n'.join(lines)
+
+          pr = os.environ.get('PR_NUMBER')
+          if pr:
+              subprocess.run(
+                  ['gh', 'pr', 'comment', pr, '--body', body],
+                  check=False
+              )
+          PYEOF
+
+      - name: Fail on HIGH findings
+        run: |
+          python3 -c "
+          import json, sys
+          with open('findings.json') as f:
+              d = json.load(f)
+          high = [x for x in d.get('findings', []) if x['severity'] == 'High']
+          if high:
+              print(f'Blocking merge: {len(high)} HIGH finding(s)')
+              sys.exit(1)
+          "
+"#;
     print!("{}", workflow);
 }
 

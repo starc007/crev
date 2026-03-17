@@ -292,33 +292,50 @@ A spinner shows while the model analyzes. Each finding streams to the terminal a
 
 ## CI / GitHub Actions
 
+Get a ready-to-use workflow with one command:
+
 ```sh
 crev init --ci > .github/workflows/crev.yml
 ```
 
-Or add to an existing workflow:
+Then add your API key as a GitHub secret: **repo → Settings → Secrets and variables → Actions → New repository secret** → `ANTHROPIC_API_KEY`.
+
+On every PR open or push, crev will:
+1. Review the diff between your branch and `main`
+2. Post each finding as an **inline comment on the PR diff**
+3. Post a summary comment on the PR thread
+4. **Block merge** if any HIGH findings exist
+
+The generated workflow looks like:
 
 ```yaml
-- name: Install crev
-  run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
-
-# Option A: local Ollama
-- name: Review PR (Ollama)
-  run: |
-    curl -fsSL https://ollama.ai/install.sh | sh
-    ollama serve &
-    ollama pull qwen2.5-coder:7b
-    crev review --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
-      --json > findings.json
-
-# Option B: cloud model (no Ollama needed)
-- name: Review PR (Anthropic)
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-  run: |
-    crev review --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
-      --model claude-sonnet-4-6 --json > findings.json
+name: crev code review
+on:
+  pull_request:
+    types: [opened, synchronize]
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install crev
+        run: curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh
+      - name: Run crev review
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          crev review \
+            --commits ${{ github.event.pull_request.base.sha }}..${{ github.sha }} \
+            --model claude-sonnet-4-5 \
+            --json > findings.json
+      # ... posts inline annotations + PR comment, fails on HIGH
 ```
+
+To use OpenAI instead: set `OPENAI_API_KEY` as the secret and change `--model` to `gpt-4o`.
 
 ---
 
