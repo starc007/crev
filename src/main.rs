@@ -125,6 +125,9 @@ enum Commands {
         #[arg(long)]
         init: bool,
     },
+
+    /// Update crev to the latest version
+    Update,
 }
 
 #[derive(Subcommand)]
@@ -177,6 +180,10 @@ async fn main() -> Result<()> {
 
         Commands::Rules { action } => {
             run_rules(action)?;
+        }
+
+        Commands::Update => {
+            run_update()?;
         }
 
         Commands::Config { show, init } => {
@@ -513,6 +520,20 @@ fi
 
 fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
     git::find_repo_root(start)
+}
+
+fn run_update() -> Result<()> {
+    eprintln!("Updating crev to the latest version...");
+    let status = std::process::Command::new("sh")
+        .args([
+            "-c",
+            "curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh",
+        ])
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("Update failed. Try running the install script manually:\n  curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh");
+    }
+    Ok(())
 }
 
 fn print_ci_workflow() {
