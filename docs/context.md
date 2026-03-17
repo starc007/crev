@@ -156,6 +156,27 @@ Remove with `crev init --uninstall` or `rm .git/hooks/pre-push`.
 
 ---
 
+## CI / GitHub Actions (`crev init --ci`)
+
+`crev init --ci` writes `.github/workflows/crev.yml` directly (creates directories, overwrites if exists).
+
+Pass `--model` to get the correct secret name in the output:
+```sh
+crev init --ci --model gemini-2.0-flash   # prints: Name: GEMINI_API_KEY
+crev init --ci --model gpt-4o             # prints: Name: OPENAI_API_KEY
+crev init --ci                            # prints: Name: ANTHROPIC_API_KEY (default)
+```
+
+**Workflow triggers:**
+- `pull_request: [opened]` — runs automatically when a PR is opened
+- `issue_comment: /crev` — runs on demand when someone comments `/crev` on a PR; reacts with 👀 immediately to acknowledge
+
+**Permissions:** `pull-requests: write`, `contents: read`
+
+**Comment behaviour:** finds an existing `**crev` comment and updates it (PATCH) — no spam on repeated triggers. Falls back to creating a new comment if none exists.
+
+---
+
 ## Review history (`src/history.rs`)
 
 SQLite database at:
