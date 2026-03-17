@@ -590,12 +590,16 @@ jobs:
             echo "base=${{ github.event.pull_request.base.sha }}"   >> $GITHUB_OUTPUT
             echo "head=${{ github.sha }}"                           >> $GITHUB_OUTPUT
           else
-            PR=$(gh api repos/${{ github.repository }}/pulls \
-              --jq ".[] | select(.number == ${{ github.event.issue.number }}) | {number:.number,base:.base.sha,head:.head.sha}" \
-              | head -1)
-            echo "number=${{ github.event.issue.number }}"          >> $GITHUB_OUTPUT
-            echo "base=$(echo $PR | jq -r .base)"                   >> $GITHUB_OUTPUT
-            echo "head=$(echo $PR | jq -r .head)"                   >> $GITHUB_OUTPUT
+            PR=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} \
+              --jq '{base:.base.sha,head:.head.sha}' 2>&1)
+            if echo "$PR" | grep -q '"base"'; then
+              echo "number=${{ github.event.issue.number }}"        >> $GITHUB_OUTPUT
+              echo "base=$(echo $PR | jq -r .base)"                 >> $GITHUB_OUTPUT
+              echo "head=$(echo $PR | jq -r .head)"                 >> $GITHUB_OUTPUT
+            else
+              echo "Could not resolve PR #${{ github.event.issue.number }}: $PR"
+              exit 1
+            fi
           fi
 
       - uses: actions/checkout@v4
@@ -673,20 +677,26 @@ jobs:
                '--jq', '.[] | select(.body | startswith("**crev")) | .id'],
               capture_output=True, text=True
           )
-          comment_id = result.stdout.strip().splitlines()[0] if result.stdout.strip() else None
+          if result.returncode != 0:
+              print(f"::warning::crev: could not fetch PR comments: {result.stderr.strip()}", file=sys.stderr)
+          comment_id = result.stdout.strip().splitlines()[0] if result.returncode == 0 and result.stdout.strip() else None
 
           if comment_id:
-              subprocess.run(
+              r = subprocess.run(
                   ['gh', 'api', '--method', 'PATCH',
                    f'repos/{repo}/issues/comments/{comment_id}',
                    '-f', f'body={body}'],
-                  check=False
+                  capture_output=True, text=True
               )
+              if r.returncode != 0:
+                  print(f"::warning::crev: could not update comment: {r.stderr.strip()}", file=sys.stderr)
           else:
-              subprocess.run(
+              r = subprocess.run(
                   ['gh', 'pr', 'comment', pr, '--body', body],
-                  check=False
+                  capture_output=True, text=True
               )
+              if r.returncode != 0:
+                  print(f"::warning::crev: could not post comment: {r.stderr.strip()}", file=sys.stderr)
           PYEOF
 
       - name: Fail on HIGH findings
