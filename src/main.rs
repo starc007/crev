@@ -440,7 +440,24 @@ fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: b
     let repo_root = find_git_root(&std::env::current_dir()?)?;
 
     if ci {
-        print_ci_workflow();
+        let workflows_dir = repo_root.join(".github/workflows");
+        std::fs::create_dir_all(&workflows_dir)?;
+        let yml_path = workflows_dir.join("crev.yml");
+        let existed = yml_path.exists();
+        std::fs::write(&yml_path, ci_workflow_content())?;
+        if existed {
+            println!("Updated {}", yml_path.display());
+        } else {
+            println!("Created {}", yml_path.display());
+        }
+        println!();
+        println!("Add your API key as a repository secret:");
+        println!("  Repo → Settings → Secrets and variables → Actions → New repository secret");
+        println!("  Name: ANTHROPIC_API_KEY  (or OPENAI_API_KEY / GEMINI_API_KEY)");
+        println!();
+        println!("Then commit and push:");
+        println!("  git add .github/workflows/crev.yml");
+        println!("  git commit -m \"ci: add crev code review\"");
         return Ok(());
     }
 
@@ -536,9 +553,9 @@ fn run_update() -> Result<()> {
     Ok(())
 }
 
-fn print_ci_workflow() {
+fn ci_workflow_content() -> &'static str {
     // Note: ${{ }} expressions are GitHub Actions syntax — they stay as-is in the output.
-    let workflow = r#"# Save as .github/workflows/crev.yml
+    r#"# Save as .github/workflows/crev.yml
 # Required secret: set one of ANTHROPIC_API_KEY, OPENAI_API_KEY, or GEMINI_API_KEY
 # in repo Settings → Secrets and variables → Actions, then update the env + --model below.
 #
@@ -686,8 +703,7 @@ jobs:
               print(f'Blocking merge: {len(high)} HIGH finding(s)')
               sys.exit(1)
           "
-"#;
-    print!("{}", workflow);
+"#
 }
 
 fn run_history(patterns: bool, clear: bool) -> Result<()> {
