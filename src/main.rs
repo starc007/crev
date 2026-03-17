@@ -590,16 +590,16 @@ jobs:
             echo "base=${{ github.event.pull_request.base.sha }}"   >> $GITHUB_OUTPUT
             echo "head=${{ github.sha }}"                           >> $GITHUB_OUTPUT
           else
-            PR=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} \
-              --jq '{base:.base.sha,head:.head.sha}' 2>&1)
-            if echo "$PR" | grep -q '"base"'; then
-              echo "number=${{ github.event.issue.number }}"        >> $GITHUB_OUTPUT
-              echo "base=$(echo $PR | jq -r .base)"                 >> $GITHUB_OUTPUT
-              echo "head=$(echo $PR | jq -r .head)"                 >> $GITHUB_OUTPUT
-            else
-              echo "Could not resolve PR #${{ github.event.issue.number }}: $PR"
+            PR=$(gh api repos/${{ github.repository }}/pulls/${{ github.event.issue.number }} 2>&1)
+            BASE=$(echo "$PR" | jq -r '.base.sha // empty' 2>/dev/null)
+            HEAD=$(echo "$PR" | jq -r '.head.sha // empty' 2>/dev/null)
+            if [ -z "$BASE" ] || [ -z "$HEAD" ]; then
+              echo "::error::Could not resolve PR #${{ github.event.issue.number }}" >&2
               exit 1
             fi
+            echo "number=${{ github.event.issue.number }}"          >> $GITHUB_OUTPUT
+            echo "base=$BASE"                                        >> $GITHUB_OUTPUT
+            echo "head=$HEAD"                                        >> $GITHUB_OUTPUT
           fi
 
       - uses: actions/checkout@v4
