@@ -96,6 +96,10 @@ enum Commands {
         /// Print a GitHub Actions workflow to stdout
         #[arg(long)]
         ci: bool,
+
+        /// Model to use in CI (determines which API key secret is shown)
+        #[arg(long)]
+        model: Option<String>,
     },
 
     /// Show review history and recurring patterns
@@ -170,8 +174,9 @@ async fn main() -> Result<()> {
             dry_run,
             uninstall,
             ci,
+            model,
         } => {
-            run_init(force, hooks_only, dry_run, uninstall, ci)?;
+            run_init(force, hooks_only, dry_run, uninstall, ci, model.as_deref())?;
         }
 
         Commands::History { patterns, clear } => {
@@ -436,7 +441,7 @@ async fn run_review(
     Ok(())
 }
 
-fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: bool) -> Result<()> {
+fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: bool, ci_model: Option<&str>) -> Result<()> {
     let repo_root = find_git_root(&std::env::current_dir()?)?;
 
     if ci {
@@ -451,9 +456,21 @@ fn run_init(force: bool, hooks_only: bool, dry_run: bool, uninstall: bool, ci: b
             println!("Created {}", yml_path.display());
         }
         println!();
+
+        // Infer which secret to add from the model name
+        let secret_name = match ci_model {
+            Some(m) if m.starts_with("gpt") || m.starts_with("o1") || m.starts_with("o3") || m.starts_with("o4") => "OPENAI_API_KEY",
+            Some(m) if m.starts_with("gemini") => "GEMINI_API_KEY",
+            Some(m) if m.starts_with("claude") => "ANTHROPIC_API_KEY",
+            Some(_) => "ANTHROPIC_API_KEY", // local/Ollama model — remind anyway
+            None => "ANTHROPIC_API_KEY",    // default template uses Claude
+        };
         println!("Add your API key as a repository secret:");
         println!("  Repo → Settings → Secrets and variables → Actions → New repository secret");
-        println!("  Name: ANTHROPIC_API_KEY  (or OPENAI_API_KEY / GEMINI_API_KEY)");
+        println!("  Name: {}", secret_name);
+        if ci_model.map_or(false, |m| !m.starts_with("claude") && !m.starts_with("gpt") && !m.starts_with("gemini")) {
+            println!("  Note: update the --model and env var in .github/workflows/crev.yml to match your backend.");
+        }
         println!();
         println!("Then commit and push:");
         println!("  git add .github/workflows/crev.yml");
@@ -579,7 +596,16 @@ jobs:
        github.event.comment.body == '/crev')
     permissions:
       pull-requests: write
+      contents: read
     steps:
+      - name: Acknowledge /crev comment
+        if: github.event_name == 'issue_comment'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api repos/${{ github.repository }}/issues/comments/${{ github.event.comment.id }}/reactions \
+            --method POST -f content=eyes
+
       - name: Resolve PR metadata
         id: pr
         env:
