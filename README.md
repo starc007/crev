@@ -196,15 +196,18 @@ crev review --model llama-3.1-70b-versatile
 
 ### Ollama local models
 
-crev picks the best available Ollama model automatically:
+Any model available in your Ollama instance works — crev picks the best one it finds automatically. Pull any coding model and crev will use it:
 
-| Model | Min RAM | Quality |
-|---|---|---|
-| `qwen2.5-coder:14b` | 16 GB | ★★★★★ |
-| `qwen2.5-coder:7b` | 8 GB | ★★★★☆ |
-| `deepseek-coder-v2:16b` | 16 GB | ★★★★★ |
-| `codellama:13b` | 8 GB | ★★★★☆ |
-| `llama3:8b` | 8 GB | ★★★☆☆ |
+```sh
+ollama pull qwen2.5-coder:14b
+crev review --staged
+```
+
+Or specify explicitly:
+
+```sh
+crev review --staged --model qwen2.5-coder:14b
+```
 
 Set `OLLAMA_HOST` to point at a remote Ollama instance.
 
