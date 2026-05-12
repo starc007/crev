@@ -2,6 +2,31 @@ use crate::config::Config;
 use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
 use crate::linters::LinterFinding;
+use crate::llm::PromptParts;
+
+/// Owned counterpart to [`PromptParts`] — built here so each backend can
+/// borrow the parts when it streams a completion. The split is chosen so that
+/// Anthropic prompt caching reuses the stable `system` and `cacheable` blocks
+/// across runs while only the `dynamic` block changes per review.
+pub struct PromptPartsOwned {
+    pub system: String,
+    pub cacheable: String,
+    pub dynamic: String,
+}
+
+impl PromptPartsOwned {
+    pub fn as_parts(&self) -> PromptParts<'_> {
+        PromptParts {
+            system: &self.system,
+            cacheable: &self.cacheable,
+            dynamic: &self.dynamic,
+        }
+    }
+
+    pub fn to_combined(&self) -> String {
+        format!("{}\n\n{}\n\n{}", self.system, self.cacheable, self.dynamic)
+    }
+}
 
 const SYSTEM_INSTRUCTIONS: &str = "\
 You are a senior engineer doing a focused code review of a diff.
@@ -72,6 +97,90 @@ Respond with one finding per line in this exact format:
 LGTM: brief note if no issues found.
 Every finding must name the specific variable, function, or value involved.
 Do not output vague findings like 'add error handling' without specifics.";
+
+/// Build a [`PromptPartsOwned`] from a full review context.
+///
+/// Cache split:
+///   - `system`:     the static reviewer instructions (severity rubric,
+///                   grounding rules, few-shot examples). Never varies.
+///   - `cacheable`:  team rules + output-format trailer. Stable per repo
+///                   across many runs, so still worth caching even though
+///                   `dynamic` always invalidates the suffix.
+///   - `dynamic`:    diff, called-fn bodies, type defs, related tests,
+///                   linter findings. Changes every review.
+pub fn build_review_prompt_parts_ctx(
+    ctx: &ReviewContext,
+    config: &Config,
+    security_mode: bool,
+    linter_findings: &[LinterFinding],
+) -> PromptPartsOwned {
+    let system = if security_mode { SECURITY_INSTRUCTIONS } else { SYSTEM_INSTRUCTIONS }.to_string();
+
+    let mut cacheable = String::new();
+    if !config.rules.is_empty() {
+        cacheable.push_str("=== TEAM RULES ===\n");
+        cacheable.push_str("Also check for these team-specific rules:\n");
+        for rule in &config.rules {
+            cacheable.push_str(&format!("- [{}]: {}\n", rule.name, rule.description));
+        }
+        cacheable.push('\n');
+    }
+    cacheable.push_str("=== OUTPUT FORMAT ===\n");
+    cacheable.push_str(OUTPUT_FORMAT);
+    cacheable.push('\n');
+
+    let mut dynamic = String::new();
+    dynamic.push_str("=== CHANGED CODE ===\n");
+    dynamic.push_str(&format_diff(&ctx.diff));
+    dynamic.push('\n');
+
+    if !ctx.called_functions.is_empty() {
+        dynamic.push_str("=== FUNCTIONS CALLED BY CHANGED CODE ===\n");
+        for f in &ctx.called_functions {
+            dynamic.push_str(&f.full_text);
+            dynamic.push_str("\n\n");
+        }
+    }
+
+    if !ctx.types_used.is_empty() {
+        dynamic.push_str("=== TYPES USED ===\n");
+        for t in &ctx.types_used {
+            dynamic.push_str(&format!(
+                "{} {} {{ {} }}\n",
+                format!("{:?}", t.kind).to_lowercase(),
+                t.name,
+                t.fields.join(", ")
+            ));
+        }
+        dynamic.push('\n');
+    }
+
+    if !ctx.test_functions.is_empty() {
+        dynamic.push_str("=== RELATED TESTS ===\n");
+        for f in &ctx.test_functions {
+            dynamic.push_str(&f.full_text);
+            dynamic.push_str("\n\n");
+        }
+    }
+
+    if !linter_findings.is_empty() {
+        dynamic.push_str("=== LINTER FINDINGS ===\n");
+        for f in linter_findings {
+            dynamic.push_str(&format!(
+                "{} at {}:{}\n",
+                f.code,
+                f.file.display(),
+                f.line
+            ));
+        }
+        dynamic.push_str(
+            "For each linter finding above, assess: is this a genuine risk or a \
+             false positive given the context? Explain the actual consequence if real.\n\n",
+        );
+    }
+
+    PromptPartsOwned { system, cacheable, dynamic }
+}
 
 /// Build a prompt from a full ReviewContext (Phase 2+) with optional linter findings.
 pub fn build_review_prompt_ctx(

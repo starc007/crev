@@ -313,12 +313,16 @@ async fn run_review(
         eprintln!("linters: {} findings in diff ({})", linter_findings.len(), summary.join(", "));
     }
 
-    let prompt_text = match ctx_result {
-        Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security, &linter_findings),
+    let prompt_parts = match ctx_result {
+        Ok(ctx) => Some(prompt::build_review_prompt_parts_ctx(&ctx, &cfg, security, &linter_findings)),
         Err(e) => {
             eprintln!("context: Minimal (fallback to diff-only: {})", e);
-            prompt::build_review_prompt(&diff, &cfg, security)
+            None
         }
+    };
+    let prompt_text: String = match &prompt_parts {
+        Some(parts) => parts.to_combined(),
+        None => prompt::build_review_prompt(&diff, &cfg, security),
     };
 
     // Show recurring patterns before the review output
@@ -362,7 +366,7 @@ async fn run_review(
     let line_tx2 = line_tx.clone();
 
     let start = Instant::now();
-    let full_response = backend.complete(&prompt_text, &(move |token: &str| {
+    let token_callback = move |token: &str| {
         let mut buf = line_buf2.lock().unwrap();
         buf.push_str(token);
         while let Some(nl) = buf.find('\n') {
@@ -372,7 +376,11 @@ async fn run_review(
                 let _ = line_tx2.send(line);
             }
         }
-    })).await?;
+    };
+    let _full_response = match &prompt_parts {
+        Some(parts) => backend.complete_parts(parts.as_parts(), &token_callback).await?,
+        None => backend.complete(&prompt_text, &token_callback).await?,
+    };
 
     // Flush any remaining content not terminated with a newline
     {
