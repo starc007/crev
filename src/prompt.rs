@@ -1,3 +1,4 @@
+use crate::ast::{distill_function, MAX_CALLED_FN_LINES};
 use crate::config::Config;
 use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
@@ -137,7 +138,7 @@ pub fn build_review_prompt_parts_ctx(
     if !ctx.called_functions.is_empty() {
         dynamic.push_str("=== FUNCTIONS CALLED BY CHANGED CODE ===\n");
         for f in &ctx.called_functions {
-            dynamic.push_str(&f.full_text);
+            dynamic.push_str(&distill_function(f, MAX_CALLED_FN_LINES));
             dynamic.push_str("\n\n");
         }
     }

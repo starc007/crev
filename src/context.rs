@@ -2,7 +2,7 @@ use anyhow::Result;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::ast::{AstParser, FunctionInfo, TypeDef};
+use crate::ast::{distill_function, AstParser, FunctionInfo, TypeDef, MAX_CALLED_FN_LINES};
 use crate::git::{DiffHunk, ParsedDiff};
 use crate::prompt::estimate_tokens;
 
@@ -329,10 +329,11 @@ impl ContextBuilder {
             }
         }
 
-        // Called functions (full body)
+        // Called functions — estimate using the distilled form, since
+        // that's what the prompt will actually ship.
         for f in called {
             if f.full_text.is_empty() { continue; }
-            let cost = estimate_tokens(&f.full_text);
+            let cost = estimate_tokens(&distill_function(f, MAX_CALLED_FN_LINES));
             if used.saturating_add(cost) <= budget {
                 used = used.saturating_add(cost);
                 kept_called.push(f.clone());
