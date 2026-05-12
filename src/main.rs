@@ -1,6 +1,7 @@
 mod ast;
 mod config;
 mod context;
+mod critique;
 mod git;
 mod history;
 mod linters;
@@ -62,6 +63,10 @@ enum Commands {
         /// Never fall back to cloud LLM
         #[arg(long)]
         no_cloud: bool,
+
+        /// Skip the self-critique pass (faster, slightly more false positives)
+        #[arg(long)]
+        no_critique: bool,
 
         /// Model to use (e.g. qwen2.5-coder:14b, claude-sonnet-4-5, gpt-4o, gemini-1.5-pro)
         #[arg(long, short = 'm')]
@@ -158,10 +163,11 @@ async fn main() -> Result<()> {
             security,
             verbose: _verbose,
             no_cloud,
+            no_critique,
             model,
             path,
         } => {
-            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security, no_cloud, model).await?;
+            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security, no_cloud, no_critique, model).await?;
         }
 
         Commands::Init {
@@ -223,6 +229,7 @@ async fn run_review(
     fail_on: Option<String>,
     security: bool,
     no_cloud: bool,
+    no_critique: bool,
     cli_model: Option<String>,
 ) -> Result<()> {
     let cfg = config::load_config(path);
@@ -376,7 +383,11 @@ async fn run_review(
     }
     drop(line_tx); // close channel so receiver loop exits
 
-    // ── Consume lines: stop spinner then print each finding ───────────────────
+    // ── Consume lines: stop spinner then collect / print each finding ────────
+    // When critique is enabled we buffer findings instead of streaming them,
+    // because a finding the model will later drop in critique shouldn't have
+    // already been shown to the user. JSON output is always buffered.
+    let stream_live = !json && no_critique;
     let validator = validate::DiffIndex::from_diff(&diff);
     let mut findings: Vec<output::Finding> = Vec::new();
     let mut dropped_findings: Vec<(output::Finding, validate::DropReason)> = Vec::new();
@@ -386,20 +397,17 @@ async fn run_review(
 
     while let Some(line) = line_rx.recv().await {
         if let Some(raw) = output::try_parse_finding_line(&line) {
-            // Stop the spinner on the first parseable line so the user
-            // sees output streaming, regardless of validation outcome.
-            if let Some(task) = spinner_task.take() {
-                stop_tx.send(true).ok();
-                task.await.ok();
+            if stream_live {
+                if let Some(task) = spinner_task.take() {
+                    stop_tx.send(true).ok();
+                    task.await.ok();
+                }
             }
 
             let (kept, outcome) = validator.apply(raw.clone());
             if let validate::Validation::Reanchor { .. } = outcome {
                 reanchored_count += 1;
             }
-            // A finding accepted on a Context line (not Added) is usually a
-            // comment about pre-existing code — flag it so the user knows it
-            // isn't about the change itself.
             let counts_as_context_only = matches!(
                 outcome,
                 validate::Validation::Accept { on_change: false } | validate::Validation::Reanchor { on_change: false, .. }
@@ -412,7 +420,7 @@ async fn run_review(
 
             match kept {
                 Some(f) => {
-                    if !json {
+                    if stream_live {
                         output::print_finding(&f);
                     }
                     findings.push(f);
@@ -426,10 +434,32 @@ async fn run_review(
         }
     }
 
-    // Stop spinner if model returned nothing parseable
+    // Run critique pass before the spinner is dismissed so the user sees a
+    // single uninterrupted "analyzing..." spinner across both LLM calls.
+    let mut critique_dropped: Vec<(output::Finding, String)> = Vec::new();
+    if !no_critique && !json && !findings.is_empty() {
+        match critique::run_critique(findings.clone(), backend.as_ref(), &prompt_text).await {
+            Ok(result) => {
+                findings = result.kept;
+                critique_dropped = result.dropped;
+            }
+            Err(e) => {
+                eprintln!("warning: critique pass failed, keeping all findings: {}", e);
+            }
+        }
+    }
+
+    // Stop spinner now that all LLM calls are done.
     if let Some(task) = spinner_task.take() {
         stop_tx.send(true).ok();
         task.await.ok();
+    }
+
+    // For the buffered (critique-enabled) path, print the surviving findings now.
+    if !stream_live && !json {
+        for f in &findings {
+            output::print_finding(f);
+        }
     }
 
     let elapsed = start.elapsed();
@@ -462,6 +492,21 @@ async fn run_review(
                     f.file.display(),
                     f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
                     reason.as_str()
+                );
+            }
+        }
+        if !critique_dropped.is_empty() {
+            eprintln!(
+                "note: critique dropped {} finding(s) as low-signal:",
+                critique_dropped.len()
+            );
+            for (f, reason) in &critique_dropped {
+                eprintln!(
+                    "  - [{}] {}:{}  ({})",
+                    f.severity.as_str(),
+                    f.file.display(),
+                    f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+                    reason
                 );
             }
         }
