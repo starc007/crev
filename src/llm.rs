@@ -392,12 +392,14 @@ impl LlmBackend for GeminiBackend {
             .build()?;
 
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
-            self.model, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.model
         );
 
         let resp = client
             .post(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("content-type", "application/json")
             .json(&GeminiRequest {
                 contents: vec![GeminiContent {
                     parts: vec![GeminiPart { text: prompt }],
