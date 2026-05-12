@@ -15,7 +15,6 @@
 //! detector logs phantom entries.
 
 use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 
 use crate::git::{DiffLine, ParsedDiff};
 use crate::output::{Finding, Severity};
@@ -36,13 +35,12 @@ pub struct DiffIndex {
 struct FileLines {
     added: HashSet<u32>,
     context: HashSet<u32>,
+    /// Original source text for every visible line, indexed by line number.
+    /// Used to attach a code quote to each accepted finding so the user can
+    /// see the cited code without leaving the terminal.
+    content: HashMap<u32, String>,
 }
 
-impl FileLines {
-    fn contains(&self, line: u32) -> bool {
-        self.added.contains(&line) || self.context.contains(&line)
-    }
-}
 
 impl DiffIndex {
     pub fn from_diff(diff: &ParsedDiff) -> Self {
@@ -54,12 +52,14 @@ impl DiffIndex {
                 let mut line_num = hunk.new_start;
                 for line in &hunk.lines {
                     match line {
-                        DiffLine::Added(_) => {
+                        DiffLine::Added(text) => {
                             entry.added.insert(line_num);
+                            entry.content.insert(line_num, text.clone());
                             line_num += 1;
                         }
-                        DiffLine::Context(_) => {
+                        DiffLine::Context(text) => {
                             entry.context.insert(line_num);
+                            entry.content.insert(line_num, text.clone());
                             line_num += 1;
                         }
                         DiffLine::Removed(_) => {
@@ -70,6 +70,19 @@ impl DiffIndex {
             }
         }
         Self { files }
+    }
+
+    /// Look up the source text for a (file, line) pair.
+    fn line_content(&self, file: &str, line: u32) -> Option<String> {
+        self.files
+            .get(file)
+            .or_else(|| {
+                self.files
+                    .iter()
+                    .find(|(k, _)| k.ends_with(file) || file.ends_with(k.as_str()))
+                    .map(|(_, v)| v)
+            })
+            .and_then(|fl| fl.content.get(&line).cloned())
     }
 
     /// Outcome of validating a single finding.
@@ -148,27 +161,23 @@ impl DiffIndex {
     pub fn apply(&self, mut finding: Finding) -> (Option<Finding>, Validation) {
         let outcome = self.validate(&finding);
         match outcome {
-            Validation::Accept { on_change } => (Some(finding), Validation::Accept { on_change }),
+            Validation::Accept { on_change } => {
+                if let Some(line) = finding.line {
+                    let key = finding.file.to_string_lossy().to_string();
+                    finding.quote = self.line_content(&key, line);
+                }
+                (Some(finding), Validation::Accept { on_change })
+            }
             Validation::Reanchor { from, to, on_change } => {
                 finding.line = Some(to);
+                let key = finding.file.to_string_lossy().to_string();
+                finding.quote = self.line_content(&key, to);
                 (Some(finding), Validation::Reanchor { from, to, on_change })
             }
             Validation::Drop(reason) => (None, Validation::Drop(reason)),
         }
     }
 
-    /// Number of files indexed — used to suppress validation when we have no
-    /// diff to validate against (defensive guard).
-    pub fn is_empty(&self) -> bool {
-        self.files.is_empty()
-    }
-
-    /// Helper for [`crate::main`] flag wiring: should a finding's location
-    /// be silently kept when validation can't decide?
-    #[allow(dead_code)]
-    pub fn known_files(&self) -> impl Iterator<Item = PathBuf> + '_ {
-        self.files.keys().map(PathBuf::from)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,14 +202,3 @@ pub enum Validation {
     Drop(DropReason),
 }
 
-impl Validation {
-    /// True when the finding lands on a line the change actually added.
-    /// Context-only findings can still be useful but should be marked, since
-    /// they often describe pre-existing code the diff merely touched.
-    pub fn is_on_change(&self) -> bool {
-        match self {
-            Validation::Accept { on_change } | Validation::Reanchor { on_change, .. } => *on_change,
-            Validation::Drop(_) => false,
-        }
-    }
-}

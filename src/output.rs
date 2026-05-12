@@ -38,6 +38,11 @@ pub struct Finding {
     pub file: PathBuf,
     pub line: Option<u32>,
     pub message: String,
+    /// The exact source line the finding refers to, copied from the diff.
+    /// Attached after validation so the user has the cited code right next
+    /// to the description and never has to alt-tab to verify the citation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 fn parse_severity_line(line: &str) -> Option<Finding> {
@@ -76,6 +81,7 @@ fn parse_severity_line(line: &str) -> Option<Finding> {
         file,
         line: line_num,
         message: message.to_string(),
+        quote: None,
     })
 }
 
@@ -99,6 +105,7 @@ pub fn try_parse_finding_line(line: &str) -> Option<Finding> {
             file: PathBuf::new(),
             line: None,
             message: if msg.is_empty() { "No issues found.".to_string() } else { msg },
+            quote: None,
         });
     }
     None
@@ -112,22 +119,44 @@ pub fn print_finding(f: &Finding) {
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location.bold());
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Med => {
             let prefix = "[~] MED  ".yellow();
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location);
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Low => {
             let prefix = "[i] LOW  ".blue();
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location);
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Lgtm => {
             println!("{} {}", "[✓] LGTM".green().bold(), f.message.green());
         }
+    }
+}
+
+fn print_quote(f: &Finding) {
+    if let Some(quote) = &f.quote {
+        let trimmed = quote.trim_end();
+        if trimmed.is_empty() {
+            return;
+        }
+        // Indent under the message and dim the source so the user's eye
+        // returns to the description by default. Trim very long lines.
+        let max = 120usize;
+        let display = if trimmed.chars().count() > max {
+            let truncated: String = trimmed.chars().take(max).collect();
+            format!("{}…", truncated)
+        } else {
+            trimmed.to_string()
+        };
+        println!("    {} {}", "│".dimmed(), display.dimmed());
     }
 }
 
@@ -173,6 +202,8 @@ pub struct JsonFinding {
     pub file: String,
     pub line: Option<u32>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -192,6 +223,7 @@ pub fn print_findings_json(findings: &[Finding]) -> Result<()> {
             file: f.file.display().to_string(),
             line: f.line,
             message: f.message.clone(),
+            quote: f.quote.clone(),
         })
         .collect();
 
