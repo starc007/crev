@@ -280,8 +280,20 @@ fn format_hunk(hunk: &DiffHunk) -> String {
     out
 }
 
+/// Rough char-to-token conversion. The OpenAI / Anthropic tokenizers cluster
+/// around 3.3-3.5 chars/token on source code (denser than prose), so the old
+/// `len/4` rule consistently *under*-estimated. Using `*2/7` (~3.5) gives us
+/// a small safety margin so the prompt rarely overshoots the API's context
+/// limit and gets truncated mid-response.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4
+    estimate_tokens_from_chars(text.len())
+}
+
+/// Same ratio as [`estimate_tokens`] but takes a precomputed char count for
+/// callers that already know the byte length and don't want to materialize a
+/// string to pass through the API.
+pub fn estimate_tokens_from_chars(chars: usize) -> usize {
+    chars.saturating_mul(2) / 7
 }
 
 /// Render a single type definition, keeping only the fields whose names

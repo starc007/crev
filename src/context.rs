@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::ast::{distill_function, AstParser, FunctionInfo, TypeDef, MAX_CALLED_FN_LINES};
 use crate::git::{DiffHunk, ParsedDiff};
-use crate::prompt::estimate_tokens;
+use crate::prompt::{estimate_tokens, estimate_tokens_from_chars};
 
 /// Cross-chunk repo index. Walks the source tree exactly once per review,
 /// even when chunking forces multiple context builds. Without this, every
@@ -313,11 +313,13 @@ impl ContextBuilder {
     ) -> (Vec<TypeDef>, Vec<FunctionInfo>, Vec<FunctionInfo>) {
         use crate::git::DiffLine;
 
-        // Estimate diff tokens from the actual rendered line content.
+        // Estimate diff tokens from the actual rendered line content; pass
+        // through `estimate_tokens` so the conversion ratio stays in sync
+        // with prompt.rs.
         let diff_chars: usize = diff.files.iter().flat_map(|f| f.hunks.iter()).flat_map(|h| h.lines.iter()).map(|l| match l {
             DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.len() + 8,
         }).sum();
-        let diff_tokens = diff_chars / 4;
+        let diff_tokens = estimate_tokens_from_chars(diff_chars);
         let total_budget = self.max_tokens;
         let context_budget = total_budget.saturating_sub(diff_tokens);
 
