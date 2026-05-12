@@ -189,12 +189,40 @@ pub fn should_ignore_file(path: &Path, config: &Config) -> bool {
     let path_str = path.to_string_lossy();
 
     for pattern in &config.ignore.paths {
+        if !is_safe_ignore_pattern(pattern) {
+            eprintln!(
+                "warning: ignoring unsafe glob pattern {:?} \
+                 (must be repo-relative, no '..' or absolute paths)",
+                pattern
+            );
+            continue;
+        }
         if glob_match(pattern, &path_str) {
             return true;
         }
     }
 
     false
+}
+
+fn is_safe_ignore_pattern(pattern: &str) -> bool {
+    if pattern.is_empty() {
+        return false;
+    }
+    if pattern.starts_with('/') || pattern.starts_with('\\') {
+        return false;
+    }
+    // Windows-style drive prefix
+    if pattern.len() >= 2 && pattern.chars().nth(1) == Some(':') {
+        return false;
+    }
+    // Reject any '..' segment (handles `../`, `..\\`, and a trailing `..`).
+    for segment in pattern.split(|c| c == '/' || c == '\\') {
+        if segment == ".." {
+            return false;
+        }
+    }
+    true
 }
 
 fn glob_match(pattern: &str, path: &str) -> bool {
