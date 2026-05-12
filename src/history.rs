@@ -226,21 +226,27 @@ fn normalize_pattern(msg: &str) -> String {
 }
 
 fn regex_strip_line_refs(s: &str) -> String {
-    // Strip patterns like ":42" or "line 42" from the message
+    // Strip patterns like ":42" from the message. UTF-8 safe: walks char
+    // boundaries via char_indices so multi-byte chars round-trip cleanly.
     let mut out = String::with_capacity(s.len());
-    let bytes = s.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b':' && i + 1 < bytes.len() && bytes[i + 1].is_ascii_digit() {
-            // skip ":NNN"
-            i += 1;
-            while i < bytes.len() && bytes[i].is_ascii_digit() {
-                i += 1;
+    let mut chars = s.char_indices().peekable();
+    while let Some((_, c)) = chars.next() {
+        if c == ':' {
+            // Peek next char; if it's an ascii digit, swallow the ":NNN" run.
+            if let Some(&(_, next)) = chars.peek() {
+                if next.is_ascii_digit() {
+                    while let Some(&(_, d)) = chars.peek() {
+                        if d.is_ascii_digit() {
+                            chars.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    continue;
+                }
             }
-        } else {
-            out.push(bytes[i] as char);
-            i += 1;
         }
+        out.push(c);
     }
     out
 }
