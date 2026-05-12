@@ -5,6 +5,22 @@ use tokio::process::Command;
 
 use crate::git::{FileType, ParsedDiff};
 
+/// Normalize an absolute or relative path to a repo-rooted relative path string.
+/// Returns the original lossy string if canonicalization fails.
+fn rel_to_repo(path: &Path, repo_root: &Path) -> String {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        repo_root.join(path)
+    };
+    let canon = std::fs::canonicalize(&absolute).unwrap_or(absolute);
+    let canon_root = std::fs::canonicalize(repo_root).unwrap_or_else(|_| repo_root.to_path_buf());
+    canon
+        .strip_prefix(&canon_root)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| canon.to_string_lossy().to_string())
+}
+
 #[derive(Debug, Clone)]
 pub struct LinterFinding {
     pub linter: String,
@@ -64,25 +80,25 @@ pub async fn run_linters(diff: &ParsedDiff, repo_root: &Path) -> Vec<LinterFindi
     }
 
     // Filter: only include findings that overlap with diff (±5 lines of a changed line)
-    filter_to_diff(&all, diff)
+    filter_to_diff(&all, diff, repo_root)
 }
 
-fn filter_to_diff(findings: &[LinterFinding], diff: &ParsedDiff) -> Vec<LinterFinding> {
+fn filter_to_diff(findings: &[LinterFinding], diff: &ParsedDiff, repo_root: &Path) -> Vec<LinterFinding> {
+    // Pre-compute normalized repo-relative paths for diff files.
+    let diff_paths: Vec<(String, &crate::git::ChangedFile)> = diff
+        .files
+        .iter()
+        .map(|df| (rel_to_repo(&df.path, repo_root), df))
+        .collect();
+
     findings
         .iter()
         .filter(|f| {
-            diff.files.iter().any(|df| {
-                // Normalise both paths for comparison
-                let df_path = df.path.to_string_lossy();
-                let f_path = f.file.to_string_lossy();
-                let paths_match = f_path.ends_with(df_path.as_ref())
-                    || df_path.ends_with(f_path.as_ref())
-                    || f_path == df_path;
-
-                if !paths_match {
+            let f_rel = rel_to_repo(&f.file, repo_root);
+            diff_paths.iter().any(|(df_rel, df)| {
+                if df_rel != &f_rel {
                     return false;
                 }
-
                 df.hunks.iter().any(|h| {
                     let changed_lines: Vec<u32> = (h.new_start..h.new_start + h.new_lines).collect();
                     changed_lines

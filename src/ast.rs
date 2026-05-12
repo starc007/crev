@@ -45,6 +45,31 @@ pub enum TypeKind {
     Class,
 }
 
+/// Maximum lines we'll ship for a single called-function body before
+/// distilling. Most "what does this called function do?" questions are
+/// answered by its first ~12 lines and its return statement; shipping a
+/// 200-line body burns context budget for negligible signal gain.
+pub const MAX_CALLED_FN_LINES: usize = 15;
+
+/// Render a function for inclusion in the prompt: full body if short, or
+/// a head + tail slice with an "N lines omitted" marker otherwise.
+pub fn distill_function(info: &FunctionInfo, max_lines: usize) -> String {
+    let lines: Vec<&str> = info.full_text.lines().collect();
+    if lines.len() <= max_lines {
+        return info.full_text.clone();
+    }
+    let head_take = max_lines.saturating_sub(2).max(1);
+    let head: Vec<&str> = lines.iter().take(head_take).copied().collect();
+    let tail = lines.last().copied().unwrap_or("}");
+    let omitted = lines.len().saturating_sub(head_take + 1);
+    format!(
+        "{}\n    // ... {} lines omitted ...\n{}",
+        head.join("\n"),
+        omitted,
+        tail
+    )
+}
+
 // ── parser ───────────────────────────────────────────────────────────────────
 
 pub struct AstParser {

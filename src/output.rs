@@ -38,44 +38,11 @@ pub struct Finding {
     pub file: PathBuf,
     pub line: Option<u32>,
     pub message: String,
-}
-
-pub fn parse_findings(llm_output: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    for line in llm_output.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Match [HIGH], [MED], [LOW] patterns
-        if let Some(finding) = parse_severity_line(line) {
-            findings.push(finding);
-            continue;
-        }
-
-        // Match LGTM: ...
-        if line.starts_with("LGTM:") || line.starts_with("LGTM ") {
-            let msg = line
-                .trim_start_matches("LGTM:")
-                .trim_start_matches("LGTM")
-                .trim()
-                .to_string();
-            findings.push(Finding {
-                severity: Severity::Lgtm,
-                file: PathBuf::new(),
-                line: None,
-                message: if msg.is_empty() {
-                    "No issues found.".to_string()
-                } else {
-                    msg
-                },
-            });
-        }
-    }
-
-    findings
+    /// The exact source line the finding refers to, copied from the diff.
+    /// Attached after validation so the user has the cited code right next
+    /// to the description and never has to alt-tab to verify the citation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 fn parse_severity_line(line: &str) -> Option<Finding> {
@@ -114,6 +81,7 @@ fn parse_severity_line(line: &str) -> Option<Finding> {
         file,
         line: line_num,
         message: message.to_string(),
+        quote: None,
     })
 }
 
@@ -137,6 +105,7 @@ pub fn try_parse_finding_line(line: &str) -> Option<Finding> {
             file: PathBuf::new(),
             line: None,
             message: if msg.is_empty() { "No issues found.".to_string() } else { msg },
+            quote: None,
         });
     }
     None
@@ -150,22 +119,44 @@ pub fn print_finding(f: &Finding) {
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location.bold());
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Med => {
             let prefix = "[~] MED  ".yellow();
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location);
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Low => {
             let prefix = "[i] LOW  ".blue();
             let location = format_location(&f.file, f.line);
             println!("{}{}", prefix, location);
             println!("    {}", f.message);
+            print_quote(f);
         }
         Severity::Lgtm => {
             println!("{} {}", "[✓] LGTM".green().bold(), f.message.green());
         }
+    }
+}
+
+fn print_quote(f: &Finding) {
+    if let Some(quote) = &f.quote {
+        let trimmed = quote.trim_end();
+        if trimmed.is_empty() {
+            return;
+        }
+        // Indent under the message and dim the source so the user's eye
+        // returns to the description by default. Trim very long lines.
+        let max = 120usize;
+        let display = if trimmed.chars().count() > max {
+            let truncated: String = trimmed.chars().take(max).collect();
+            format!("{}…", truncated)
+        } else {
+            trimmed.to_string()
+        };
+        println!("    {} {}", "│".dimmed(), display.dimmed());
     }
 }
 
@@ -187,58 +178,6 @@ pub fn print_summary(findings: &[Finding], elapsed: Duration, model: &str) {
         high + med + low, high, med, low, elapsed.as_secs_f64(), model
     );
     println!("\n{}", summary.dimmed());
-}
-
-pub fn print_findings(findings: &[Finding], elapsed: Duration, model: &str) {
-    if findings.is_empty() {
-        println!("{}", "[✓] No findings — review output was empty.".green());
-        return;
-    }
-
-    let mut high = 0;
-    let mut med = 0;
-    let mut low = 0;
-    let mut has_lgtm = false;
-
-    for finding in findings {
-        match finding.severity {
-            Severity::High => {
-                high += 1;
-                let prefix = "[!] HIGH ".bold().red();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location.bold());
-                println!("    {}", finding.message);
-            }
-            Severity::Med => {
-                med += 1;
-                let prefix = "[~] MED  ".yellow();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location);
-                println!("    {}", finding.message);
-            }
-            Severity::Low => {
-                low += 1;
-                let prefix = "[i] LOW  ".blue();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location);
-                println!("    {}", finding.message);
-            }
-            Severity::Lgtm => {
-                has_lgtm = true;
-                println!("{} {}", "[✓] LGTM".green().bold(), finding.message.green());
-            }
-        }
-    }
-
-    if !has_lgtm {
-        let total = high + med + low;
-        let elapsed_secs = elapsed.as_secs_f64();
-        let summary = format!(
-            "{} findings ({} high, {} med, {} low) · {:.1}s · {}",
-            total, high, med, low, elapsed_secs, model
-        );
-        println!("\n{}", summary.dimmed());
-    }
 }
 
 fn format_location(file: &PathBuf, line: Option<u32>) -> String {
@@ -263,6 +202,8 @@ pub struct JsonFinding {
     pub file: String,
     pub line: Option<u32>,
     pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub quote: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -282,6 +223,7 @@ pub fn print_findings_json(findings: &[Finding]) -> Result<()> {
             file: f.file.display().to_string(),
             line: f.line,
             message: f.message.clone(),
+            quote: f.quote.clone(),
         })
         .collect();
 

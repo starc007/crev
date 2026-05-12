@@ -64,7 +64,10 @@ pub async fn stream_completion(
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
         anyhow::bail!("Ollama returned {}: {}", status, body);
     }
 
@@ -155,7 +158,10 @@ pub async fn pull_model(model: &str) -> Result<()> {
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
         anyhow::bail!("Failed to pull {}: {} {}", model, status, body);
     }
 

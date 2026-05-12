@@ -1,6 +1,7 @@
 mod ast;
 mod config;
 mod context;
+mod critique;
 mod git;
 mod history;
 mod linters;
@@ -8,8 +9,9 @@ mod llm;
 mod ollama;
 mod output;
 mod prompt;
+mod validate;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -42,10 +44,6 @@ enum Commands {
         #[arg(long)]
         commits: Option<String>,
 
-        /// Review a specific file
-        #[arg(long)]
-        file: Option<PathBuf>,
-
         /// Output findings as JSON
         #[arg(long)]
         json: bool,
@@ -65,6 +63,10 @@ enum Commands {
         /// Never fall back to cloud LLM
         #[arg(long)]
         no_cloud: bool,
+
+        /// Skip the self-critique pass (faster, slightly more false positives)
+        #[arg(long)]
+        no_critique: bool,
 
         /// Model to use (e.g. qwen2.5-coder:14b, claude-sonnet-4-5, gpt-4o, gemini-1.5-pro)
         #[arg(long, short = 'm')]
@@ -156,16 +158,16 @@ async fn main() -> Result<()> {
             unstaged,
             commit,
             commits,
-            file: _file,
             json,
             fail_on,
             security,
             verbose: _verbose,
             no_cloud,
+            no_critique,
             model,
             path,
         } => {
-            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security, no_cloud, model).await?;
+            run_review(&path, staged, unstaged, commit, commits, json, fail_on, security, no_cloud, no_critique, model).await?;
         }
 
         Commands::Init {
@@ -227,6 +229,7 @@ async fn run_review(
     fail_on: Option<String>,
     security: bool,
     no_cloud: bool,
+    no_critique: bool,
     cli_model: Option<String>,
 ) -> Result<()> {
     let cfg = config::load_config(path);
@@ -291,14 +294,13 @@ async fn run_review(
         files: filtered_files,
     };
 
-    // Build semantic context and run linters in parallel (Phase 2 + 3)
+    // ── Linters run once on the whole diff ─────────────────────────────────
     let repo_root = git::find_repo_root(path)?;
     let ctx_builder = context::ContextBuilder::new(repo_root.clone(), cfg.review.max_tokens);
-
-    let (ctx_result, linter_findings) = tokio::join!(
-        ctx_builder.build(diff.clone()),
-        linters::run_linters(&diff, &repo_root),
-    );
+    // Build the repo index exactly once and reuse it across every chunk's
+    // context build. Without this, a 5-chunk review re-walks the repo 5x.
+    let repo_index = std::sync::Arc::new(context::RepoIndex::build(&repo_root, ctx_builder.parser()));
+    let linter_findings = linters::run_linters(&diff, &repo_root).await;
 
     if !linter_findings.is_empty() {
         let by_tool: std::collections::HashMap<&str, usize> =
@@ -309,14 +311,6 @@ async fn run_review(
         let summary: Vec<String> = by_tool.iter().map(|(k, v)| format!("{}: {}", k, v)).collect();
         eprintln!("linters: {} findings in diff ({})", linter_findings.len(), summary.join(", "));
     }
-
-    let prompt_text = match ctx_result {
-        Ok(ctx) => prompt::build_review_prompt_ctx(&ctx, &cfg, security, &linter_findings),
-        Err(e) => {
-            eprintln!("context: Minimal (fallback to diff-only: {})", e);
-            prompt::build_review_prompt(&diff, &cfg, security)
-        }
-    };
 
     // Show recurring patterns before the review output
     if let Ok(patterns) = history::detect_patterns(&repo_root) {
@@ -329,78 +323,160 @@ async fn run_review(
         }
     }
 
-    // ── Spinner ──────────────────────────────────────────────────────────────
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-    let spinner_task = tokio::spawn(async move {
-        let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-        let mut i = 0usize;
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(80)) => {
-                    use std::io::Write;
-                    eprint!("\r{} analyzing...", frames[i % frames.len()]);
-                    std::io::stderr().flush().ok();
-                    i += 1;
-                }
-                _ = stop_rx.changed() => {
-                    use std::io::Write;
-                    eprint!("\r\x1b[K");
-                    std::io::stderr().flush().ok();
-                    break;
-                }
-            }
-        }
-    });
+    // ── Chunk if the diff is too large for a single pass ───────────────────
+    let chunks = prompt::chunk_diff_by_files(&diff, cfg.review.max_tokens);
+    let is_chunked = chunks.len() > 1;
+    if is_chunked {
+        eprintln!(
+            "diff too large for a single review pass; splitting into {} chunks",
+            chunks.len()
+        );
+    }
 
-    // ── Stream completion, buffer complete lines ──────────────────────────────
-    let line_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let line_buf2 = line_buf.clone();
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let line_tx2 = line_tx.clone();
+    // When critique or chunking is on we buffer findings instead of streaming
+    // them, because retroactively dropping a finding that already scrolled by
+    // is more confusing than helpful.
+    let stream_live = !json && no_critique && !is_chunked;
+
+    // ── Spinner ──────────────────────────────────────────────────────────────
+    // Wrapped in a Spinner struct so any early return via `?` aborts the
+    // background task instead of leaving it running until process exit. The
+    // happy path still calls `stop()` to clear the spinner line cleanly.
+    let mut spinner = Spinner::start();
 
     let start = Instant::now();
-    let full_response = backend.complete(&prompt_text, &(move |token: &str| {
-        let mut buf = line_buf2.lock().unwrap();
-        buf.push_str(token);
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].to_string();
-            *buf = buf[nl + 1..].to_string();
-            if !line.trim().is_empty() {
-                let _ = line_tx2.send(line);
-            }
-        }
-    })).await?;
-
-    // Flush any remaining content not terminated with a newline
-    {
-        let buf = line_buf.lock().unwrap();
-        if !buf.trim().is_empty() {
-            let _ = line_tx.send(buf.trim().to_string());
-        }
-    }
-    drop(line_tx); // close channel so receiver loop exits
-
-    // ── Consume lines: stop spinner then print each finding ───────────────────
+    let validator = validate::DiffIndex::from_diff(&diff);
     let mut findings: Vec<output::Finding> = Vec::new();
-    let mut spinner_task = Some(spinner_task);
+    let mut dropped_findings: Vec<(output::Finding, validate::DropReason)> = Vec::new();
+    let mut reanchored_count: usize = 0;
+    let mut context_only_count: usize = 0;
+    let mut last_prompt_text: String = String::new();
 
-    while let Some(line) = line_rx.recv().await {
-        if let Some(f) = output::try_parse_finding_line(&line) {
-            if let Some(task) = spinner_task.take() {
-                stop_tx.send(true).ok();
-                task.await.ok();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        if is_chunked {
+            eprintln!(
+                "\rreviewing chunk {}/{} ({} file(s))",
+                chunk_idx + 1,
+                chunks.len(),
+                chunk.files.len()
+            );
+        }
+
+        // Per-chunk context build + prompt — index is shared so we don't
+        // walk the repo again for every chunk.
+        let ctx_result = ctx_builder.build(chunk.clone(), repo_index.as_ref()).await;
+        let chunk_linter_findings: Vec<linters::LinterFinding> = linter_findings
+            .iter()
+            .filter(|f| chunk.files.iter().any(|cf| cf.path == f.file))
+            .cloned()
+            .collect();
+
+        let prompt_parts = match ctx_result {
+            Ok(ctx) => Some(prompt::build_review_prompt_parts_ctx(
+                &ctx, &cfg, security, &chunk_linter_findings,
+            )),
+            Err(e) => {
+                eprintln!("context: Minimal (fallback to diff-only: {})", e);
+                None
             }
-            if !json {
-                output::print_finding(&f);
+        };
+        let prompt_text: String = match &prompt_parts {
+            Some(parts) => parts.to_combined(),
+            None => prompt::build_review_prompt(chunk, &cfg, security),
+        };
+        last_prompt_text = prompt_text.clone();
+
+        // ── Stream completion for this chunk, buffer complete lines ───────
+        let line_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let line_buf2 = line_buf.clone();
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let line_tx2 = line_tx.clone();
+        let token_callback = move |token: &str| {
+            let mut buf = line_buf2.lock().unwrap();
+            buf.push_str(token);
+            while let Some(nl) = buf.find('\n') {
+                let line = buf[..nl].to_string();
+                *buf = buf[nl + 1..].to_string();
+                if !line.trim().is_empty() {
+                    let _ = line_tx2.send(line);
+                }
             }
-            findings.push(f);
+        };
+        let _full_response = match &prompt_parts {
+            Some(parts) => backend.complete_parts(parts.as_parts(), &token_callback).await?,
+            None => backend.complete(&prompt_text, &token_callback).await?,
+        };
+
+        // Flush trailing content
+        {
+            let buf = line_buf.lock().unwrap();
+            if !buf.trim().is_empty() {
+                let _ = line_tx.send(buf.trim().to_string());
+            }
+        }
+        drop(line_tx);
+
+        // Consume per-chunk parsed findings into the global state.
+        while let Some(line) = line_rx.recv().await {
+            if let Some(raw) = output::try_parse_finding_line(&line) {
+                if stream_live {
+                    spinner.stop().await;
+                }
+
+                let (kept, outcome) = validator.apply(raw.clone());
+                if let validate::Validation::Reanchor { .. } = outcome {
+                    reanchored_count += 1;
+                }
+                let counts_as_context_only = matches!(
+                    outcome,
+                    validate::Validation::Accept { on_change: false } | validate::Validation::Reanchor { on_change: false, .. }
+                ) && !matches!(raw.severity, output::Severity::Lgtm)
+                    && raw.line.is_some()
+                    && !raw.file.as_os_str().is_empty();
+                if counts_as_context_only {
+                    context_only_count += 1;
+                }
+
+                match kept {
+                    Some(f) => {
+                        if stream_live {
+                            output::print_finding(&f);
+                        }
+                        findings.push(f);
+                    }
+                    None => {
+                        if let validate::Validation::Drop(reason) = outcome {
+                            dropped_findings.push((raw, reason));
+                        }
+                    }
+                }
+            }
         }
     }
 
-    // Stop spinner if model returned nothing parseable
-    if let Some(task) = spinner_task.take() {
-        stop_tx.send(true).ok();
-        task.await.ok();
+    // Run critique pass before the spinner is dismissed so the user sees a
+    // single uninterrupted "analyzing..." spinner across all LLM calls.
+    let mut critique_dropped: Vec<(output::Finding, String)> = Vec::new();
+    if !no_critique && !json && !findings.is_empty() {
+        match critique::run_critique(findings.clone(), backend.as_ref(), &last_prompt_text).await {
+            Ok(result) => {
+                findings = result.kept;
+                critique_dropped = result.dropped;
+            }
+            Err(e) => {
+                eprintln!("warning: critique pass failed, keeping all findings: {}", e);
+            }
+        }
+    }
+
+    // Stop spinner now that all LLM calls are done.
+    spinner.stop().await;
+
+    // For the buffered (critique-enabled) path, print the surviving findings now.
+    if !stream_live && !json {
+        for f in &findings {
+            output::print_finding(f);
+        }
     }
 
     let elapsed = start.elapsed();
@@ -409,6 +485,48 @@ async fn run_review(
         output::print_findings_json(&findings)?;
     } else {
         output::print_summary(&findings, elapsed, &model);
+        if reanchored_count > 0 {
+            eprintln!(
+                "note: re-anchored {} finding(s) to the nearest line in the diff",
+                reanchored_count
+            );
+        }
+        if context_only_count > 0 {
+            eprintln!(
+                "note: {} finding(s) reference unchanged context lines, not the change itself",
+                context_only_count
+            );
+        }
+        if !dropped_findings.is_empty() {
+            eprintln!(
+                "note: dropped {} hallucinated finding(s) (line/file not in diff)",
+                dropped_findings.len()
+            );
+            for (f, reason) in &dropped_findings {
+                eprintln!(
+                    "  - [{}] {}:{}  ({})",
+                    f.severity.as_str(),
+                    f.file.display(),
+                    f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+                    reason.as_str()
+                );
+            }
+        }
+        if !critique_dropped.is_empty() {
+            eprintln!(
+                "note: critique dropped {} finding(s) as low-signal:",
+                critique_dropped.len()
+            );
+            for (f, reason) in &critique_dropped {
+                eprintln!(
+                    "  - [{}] {}:{}  ({})",
+                    f.severity.as_str(),
+                    f.file.display(),
+                    f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+                    reason
+                );
+            }
+        }
     }
 
     // Save to history
@@ -556,16 +674,128 @@ fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
     git::find_repo_root(start)
 }
 
+/// Owns the spinner's tokio task and stop channel so it always shuts down,
+/// including on `?` early returns: Drop aborts the task. The happy path
+/// should call `stop().await` to clear the spinner line cleanly before
+/// printing real output.
+struct Spinner {
+    stop_tx: Option<tokio::sync::watch::Sender<bool>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Spinner {
+    fn start() -> Self {
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0usize;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(80)) => {
+                        use std::io::Write;
+                        eprint!("\r{} analyzing...", frames[i % frames.len()]);
+                        std::io::stderr().flush().ok();
+                        i += 1;
+                    }
+                    _ = stop_rx.changed() => {
+                        use std::io::Write;
+                        eprint!("\r\x1b[K");
+                        std::io::stderr().flush().ok();
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            stop_tx: Some(stop_tx),
+            task: Some(task),
+        }
+    }
+
+    /// Cleanly stop the spinner: send the stop signal and await the task so
+    /// the spinner line is cleared before subsequent prints land.
+    async fn stop(&mut self) {
+        if let Some(tx) = self.stop_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(task) = self.task.take() {
+            task.await.ok();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        // Best-effort cleanup on `?` paths or panics. Abort the task instead
+        // of awaiting it, since Drop is sync.
+        if let Some(tx) = self.stop_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
+}
+
+const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/starc007/crev/main/install.sh";
+
 fn run_update() -> Result<()> {
-    eprintln!("Updating crev to the latest version...");
-    let status = std::process::Command::new("sh")
-        .args([
-            "-c",
-            "curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh",
-        ])
-        .status()?;
+    eprintln!("crev update will download and execute:");
+    eprintln!("  {}", INSTALL_SCRIPT_URL);
+    eprintln!();
+    eprintln!("The script verifies the binary's SHA256 before installing, but the");
+    eprintln!("script itself is fetched from the main branch and is not pinned.");
+    eprintln!("Inspect it first if you don't trust the repo state.");
+    eprintln!();
+
+    let non_interactive =
+        std::env::var("CREV_UPDATE_YES").is_ok() || !std::io::IsTerminal::is_terminal(&std::io::stdin());
+
+    if !non_interactive {
+        eprint!("Proceed? [y/N] ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Fetch the script first so a transient network error doesn't leave a
+    // half-downloaded pipe partially executed by sh.
+    let script = std::process::Command::new("curl")
+        .args(["-fsSL", INSTALL_SCRIPT_URL])
+        .output()
+        .context("Failed to invoke curl")?;
+    if !script.status.success() {
+        anyhow::bail!(
+            "Failed to download install script: {}",
+            String::from_utf8_lossy(&script.stderr)
+        );
+    }
+
+    let mut child = std::process::Command::new("sh")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn sh")?;
+    {
+        use std::io::Write;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("Failed to open sh stdin")?;
+        stdin.write_all(&script.stdout)?;
+    }
+    let status = child.wait()?;
     if !status.success() {
-        anyhow::bail!("Update failed. Try running the install script manually:\n  curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh");
+        anyhow::bail!(
+            "Update failed. Try running the install script manually:\n  curl -fsSL {} | sh",
+            INSTALL_SCRIPT_URL
+        );
     }
     Ok(())
 }

@@ -6,9 +6,37 @@ use std::time::Duration;
 
 // ── trait ─────────────────────────────────────────────────────────────────────
 
+/// A prompt split into pieces so backends that support prompt caching can mark
+/// stable prefixes (system instructions, code context) as cacheable.
+///
+/// - `system`: high-level instructions, never changes between runs.
+/// - `cacheable`: the heavy, stable prefix — system prompt body, code context,
+///   linter findings, team rules. The same value across many runs (e.g. the
+///   pre-commit hook reviewing the same staged diff multiple times) hits the
+///   provider's cache.
+/// - `dynamic`: the parts that vary every call — currently the diff itself and
+///   the output-format trailer. Never cached.
+pub struct PromptParts<'a> {
+    pub system: &'a str,
+    pub cacheable: &'a str,
+    pub dynamic: &'a str,
+}
+
 #[async_trait]
 pub trait LlmBackend: Send + Sync {
     async fn complete(&self, prompt: &str, on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String>;
+
+    /// Default implementation concatenates the parts and calls `complete`.
+    /// Backends with native cache support (Anthropic) should override.
+    async fn complete_parts(
+        &self,
+        parts: PromptParts<'_>,
+        on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<String> {
+        let combined = format!("{}\n\n{}\n\n{}", parts.system, parts.cacheable, parts.dynamic);
+        self.complete(&combined, on_token).await
+    }
+
     fn name(&self) -> &str;
     fn is_local(&self) -> bool;
 }
@@ -150,12 +178,39 @@ struct AnthropicRequest<'a> {
     max_tokens: u32,
     stream: bool,
     messages: Vec<AnthropicMessage<'a>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<Vec<AnthropicContentBlock<'a>>>,
 }
 
 #[derive(Serialize)]
 struct AnthropicMessage<'a> {
     role: &'a str,
-    content: &'a str,
+    content: AnthropicMessageContent<'a>,
+}
+
+/// Anthropic content can be either a single string (no caching) or an array
+/// of blocks that may individually carry `cache_control`. We use the array
+/// form whenever caching is in play.
+#[derive(Serialize)]
+#[serde(untagged)]
+enum AnthropicMessageContent<'a> {
+    Plain(&'a str),
+    Blocks(Vec<AnthropicContentBlock<'a>>),
+}
+
+#[derive(Serialize)]
+struct AnthropicContentBlock<'a> {
+    #[serde(rename = "type")]
+    block_type: &'a str,
+    text: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cache_control: Option<AnthropicCacheControl>,
+}
+
+#[derive(Serialize)]
+struct AnthropicCacheControl {
+    #[serde(rename = "type")]
+    cache_type: &'static str,
 }
 
 #[derive(Deserialize)]
@@ -175,6 +230,68 @@ struct AnthropicDelta {
 #[async_trait]
 impl LlmBackend for AnthropicBackend {
     async fn complete(&self, prompt: &str, on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync)) -> Result<String> {
+        let req = AnthropicRequest {
+            model: &self.model,
+            max_tokens: 2048,
+            stream: true,
+            system: None,
+            messages: vec![AnthropicMessage {
+                role: "user",
+                content: AnthropicMessageContent::Plain(prompt),
+            }],
+        };
+        self.send_request(req, on_token).await
+    }
+
+    async fn complete_parts(
+        &self,
+        parts: PromptParts<'_>,
+        on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<String> {
+        // Anthropic caches the prefix up to the latest cache_control marker.
+        // Mark the system block and the cacheable user block; leave the
+        // dynamic block uncached so the cache key stays stable across runs
+        // where only the dynamic portion changes.
+        let system = vec![AnthropicContentBlock {
+            block_type: "text",
+            text: parts.system,
+            cache_control: Some(AnthropicCacheControl { cache_type: "ephemeral" }),
+        }];
+        let blocks = vec![
+            AnthropicContentBlock {
+                block_type: "text",
+                text: parts.cacheable,
+                cache_control: Some(AnthropicCacheControl { cache_type: "ephemeral" }),
+            },
+            AnthropicContentBlock {
+                block_type: "text",
+                text: parts.dynamic,
+                cache_control: None,
+            },
+        ];
+        let req = AnthropicRequest {
+            model: &self.model,
+            max_tokens: 2048,
+            stream: true,
+            system: Some(system),
+            messages: vec![AnthropicMessage {
+                role: "user",
+                content: AnthropicMessageContent::Blocks(blocks),
+            }],
+        };
+        self.send_request(req, on_token).await
+    }
+
+    fn name(&self) -> &str { "Anthropic" }
+    fn is_local(&self) -> bool { false }
+}
+
+impl AnthropicBackend {
+    async fn send_request(
+        &self,
+        req: AnthropicRequest<'_>,
+        on_token: &(dyn for<'a> Fn(&'a str) + Send + Sync),
+    ) -> Result<String> {
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()?;
@@ -183,20 +300,19 @@ impl LlmBackend for AnthropicBackend {
             .post("https://api.anthropic.com/v1/messages")
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", "2023-06-01")
+            .header("anthropic-beta", "prompt-caching-2024-07-31")
             .header("content-type", "application/json")
-            .json(&AnthropicRequest {
-                model: &self.model,
-                max_tokens: 2048,
-                stream: true,
-                messages: vec![AnthropicMessage { role: "user", content: prompt }],
-            })
+            .json(&req)
             .send()
             .await
             .context("Failed to connect to Anthropic API")?;
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("Anthropic API returned {}: {}", status, body);
         }
 
@@ -228,9 +344,6 @@ impl LlmBackend for AnthropicBackend {
         }
         Ok(full)
     }
-
-    fn name(&self) -> &str { "Anthropic" }
-    fn is_local(&self) -> bool { false }
 }
 
 // ── OpenAI ────────────────────────────────────────────────────────────────────
@@ -245,9 +358,67 @@ impl OpenAiBackend {
     fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .context("$OPENAI_API_KEY is not set")?;
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let base_url = match std::env::var("OPENAI_BASE_URL") {
+            Ok(url) => {
+                validate_base_url(&url)?;
+                url
+            }
+            Err(_) => "https://api.openai.com".to_string(),
+        };
         Ok(Self { api_key, base_url, model })
+    }
+}
+
+fn validate_base_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .with_context(|| format!("OPENAI_BASE_URL is not a valid URL: {}", url))?;
+
+    // Require https unless explicitly opted in.
+    let allow_http = std::env::var("CREV_ALLOW_INSECURE_BASE_URL").is_ok();
+    let scheme = parsed.scheme();
+    if scheme != "https" && !allow_http {
+        anyhow::bail!(
+            "OPENAI_BASE_URL must use https (got {}). Set CREV_ALLOW_INSECURE_BASE_URL=1 to override.",
+            scheme
+        );
+    }
+
+    // Reject loopback/private hosts unless explicitly allowed.
+    let host = parsed.host_str().unwrap_or("");
+    if !allow_http && is_private_or_loopback(host) {
+        anyhow::bail!(
+            "OPENAI_BASE_URL points at a private or loopback host ({}). \
+             Set CREV_ALLOW_INSECURE_BASE_URL=1 if this is intentional.",
+            host
+        );
+    }
+    Ok(())
+}
+
+fn is_private_or_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host == "0.0.0.0" || host == "::" {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || is_private_ip(&ip) || ip.is_unspecified();
+    }
+    false
+}
+
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 169 && o[1] == 254)
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments()[0];
+            (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80
+        }
     }
 }
 
@@ -300,7 +471,10 @@ impl LlmBackend for OpenAiBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("OpenAI API returned {}: {}", status, body);
         }
 
@@ -392,12 +566,14 @@ impl LlmBackend for GeminiBackend {
             .build()?;
 
         let url = format!(
-            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?key={}&alt=sse",
-            self.model, self.api_key
+            "https://generativelanguage.googleapis.com/v1beta/models/{}:streamGenerateContent?alt=sse",
+            self.model
         );
 
         let resp = client
             .post(&url)
+            .header("x-goog-api-key", &self.api_key)
+            .header("content-type", "application/json")
             .json(&GeminiRequest {
                 contents: vec![GeminiContent {
                     parts: vec![GeminiPart { text: prompt }],
@@ -409,7 +585,10 @@ impl LlmBackend for GeminiBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("Gemini API returned {}: {}", status, body);
         }
 

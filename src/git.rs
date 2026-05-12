@@ -298,6 +298,10 @@ fn parse_diff(diff: git2::Diff) -> Result<ParsedDiff> {
 }
 
 pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
+    // Prefer canonicalize, but if it fails (e.g. start lives behind a broken
+    // symlink) walk the literal path instead. Either way we still require
+    // that some ancestor actually contains a .git entry — without that check
+    // the fallback could silently "succeed" by returning a non-repo dir.
     let mut dir = std::fs::canonicalize(start)
         .unwrap_or_else(|_| start.to_path_buf());
     loop {
@@ -305,7 +309,10 @@ pub fn find_repo_root(start: &Path) -> Result<PathBuf> {
             return Ok(dir);
         }
         if !dir.pop() {
-            anyhow::bail!("Not inside a git repository");
+            anyhow::bail!(
+                "Not inside a git repository (searched upward from {})",
+                start.display()
+            );
         }
     }
 }

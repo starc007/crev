@@ -1,16 +1,59 @@
-use crate::ast::FunctionInfo;
+use crate::ast::{distill_function, MAX_CALLED_FN_LINES};
 use crate::config::Config;
 use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
 use crate::linters::LinterFinding;
+use crate::llm::PromptParts;
+
+/// Owned counterpart to [`PromptParts`] — built here so each backend can
+/// borrow the parts when it streams a completion. The split is chosen so that
+/// Anthropic prompt caching reuses the stable `system` and `cacheable` blocks
+/// across runs while only the `dynamic` block changes per review.
+pub struct PromptPartsOwned {
+    pub system: String,
+    pub cacheable: String,
+    pub dynamic: String,
+}
+
+impl PromptPartsOwned {
+    pub fn as_parts(&self) -> PromptParts<'_> {
+        PromptParts {
+            system: &self.system,
+            cacheable: &self.cacheable,
+            dynamic: &self.dynamic,
+        }
+    }
+
+    pub fn to_combined(&self) -> String {
+        format!("{}\n\n{}\n\n{}", self.system, self.cacheable, self.dynamic)
+    }
+}
 
 const SYSTEM_INSTRUCTIONS: &str = "\
-You are a senior engineer doing a focused code review.
+You are a senior engineer doing a focused code review of a diff.
 Only report: bugs, security vulnerabilities, logic errors, missing error \
 handling, race conditions, and performance issues.
 Do NOT comment on: style, formatting, naming conventions, or anything \
 a linter would catch.
 If the change looks correct, say LGTM with one sentence of explanation.
+
+GROUNDING RULES — failures here make findings worse than useless:
+1. Only cite line numbers that appear in the diff you are shown. Each diff \
+   line is prefixed with its line number; never invent a number.
+2. Only name functions, variables, or symbols that appear in the diff or in \
+   the context blocks below. Do not refer to code you have not seen.
+3. Findings must describe the ADDED code, not unchanged context. Context \
+   lines are shown for orientation only.
+4. If you cannot anchor a concern to a specific shown line, omit it — silence \
+   is better than a hallucinated citation.
+
+SEVERITY RUBRIC:
+- [HIGH]: data loss, auth bypass, RCE, financial bug, panic on user input, \
+  resource exhaustion, race condition that corrupts shared state.
+- [MED]: correctness bug on a non-critical path, silently swallowed error, \
+  obvious performance regression on a hot path, missing input validation.
+- [LOW]: real but minor concern (e.g. off-by-one in a debug-only path, \
+  defensive check that helps future readers).
 
 For performance findings: only report if you can identify a specific hot path \
 where the cost is significant AND avoidable given the surrounding constraints. \
@@ -29,7 +72,12 @@ while the data was never written
 
 BAD:  [MED] src/main.rs:99 — Unnecessary allocation on this line
 GOOD: [MED] src/main.rs:99 — buffer is re-allocated inside the loop on every \
-iteration; moving the allocation before the loop would reduce it to once";
+iteration; moving the allocation before the loop would reduce it to once
+
+BAD (line not in diff, fabricated):
+  [HIGH] src/auth.rs:999 — token comparison is timing-unsafe
+GOOD (concern is real but you cannot point to a shown line):
+  <omit the finding rather than invent a line number>";
 
 const SECURITY_INSTRUCTIONS: &str = "\
 You are a security engineer doing a targeted vulnerability review.
@@ -51,95 +99,116 @@ LGTM: brief note if no issues found.
 Every finding must name the specific variable, function, or value involved.
 Do not output vague findings like 'add error handling' without specifics.";
 
-/// Build a prompt from a full ReviewContext (Phase 2+) with optional linter findings.
-pub fn build_review_prompt_ctx(
+/// Build a [`PromptPartsOwned`] from a full review context.
+///
+/// Cache split:
+///   - `system`:     the static reviewer instructions (severity rubric,
+///                   grounding rules, few-shot examples). Never varies.
+///   - `cacheable`:  team rules + output-format trailer. Stable per repo
+///                   across many runs, so still worth caching even though
+///                   `dynamic` always invalidates the suffix.
+///   - `dynamic`:    diff, called-fn bodies, type defs, related tests,
+///                   linter findings. Changes every review.
+pub fn build_review_prompt_parts_ctx(
     ctx: &ReviewContext,
     config: &Config,
     security_mode: bool,
     linter_findings: &[LinterFinding],
-) -> String {
-    let mut prompt = String::new();
+) -> PromptPartsOwned {
+    let system = if security_mode { SECURITY_INSTRUCTIONS } else { SYSTEM_INSTRUCTIONS }.to_string();
 
-    // 1. System instructions
-    prompt.push_str(if security_mode { SECURITY_INSTRUCTIONS } else { SYSTEM_INSTRUCTIONS });
-    prompt.push_str("\n\n");
+    let mut cacheable = String::new();
+    if !config.rules.is_empty() {
+        cacheable.push_str("=== TEAM RULES ===\n");
+        cacheable.push_str("Also check for these team-specific rules:\n");
+        for rule in &config.rules {
+            cacheable.push_str(&format!("- [{}]: {}\n", rule.name, rule.description));
+        }
+        cacheable.push('\n');
+    }
+    cacheable.push_str("=== OUTPUT FORMAT ===\n");
+    cacheable.push_str(OUTPUT_FORMAT);
+    cacheable.push('\n');
 
-    // 2. Changed code
-    prompt.push_str("=== CHANGED CODE ===\n");
-    prompt.push_str(&format_diff(&ctx.diff));
-    prompt.push('\n');
+    let mut dynamic = String::new();
+    dynamic.push_str("=== CHANGED CODE ===\n");
+    dynamic.push_str(&format_diff(&ctx.diff));
+    dynamic.push('\n');
 
-    // 3. Called function bodies
     if !ctx.called_functions.is_empty() {
-        prompt.push_str("=== FUNCTIONS CALLED BY CHANGED CODE ===\n");
+        dynamic.push_str("=== FUNCTIONS CALLED BY CHANGED CODE ===\n");
         for f in &ctx.called_functions {
-            prompt.push_str(&f.full_text);
-            prompt.push_str("\n\n");
+            dynamic.push_str(&distill_function(f, MAX_CALLED_FN_LINES));
+            dynamic.push_str("\n\n");
         }
     }
 
-    // 4. Types used
     if !ctx.types_used.is_empty() {
-        prompt.push_str("=== TYPES USED ===\n");
+        let diff_idents = collect_diff_identifiers(&ctx.diff);
+        let mut rendered_types = String::new();
         for t in &ctx.types_used {
-            prompt.push_str(&format!(
-                "{} {} {{ {} }}\n",
-                format!("{:?}", t.kind).to_lowercase(),
-                t.name,
-                t.fields.join(", ")
-            ));
+            if let Some(line) = render_type(t, &diff_idents) {
+                rendered_types.push_str(&line);
+                rendered_types.push('\n');
+            }
         }
-        prompt.push('\n');
+        if !rendered_types.is_empty() {
+            dynamic.push_str("=== TYPES USED ===\n");
+            dynamic.push_str(&rendered_types);
+            dynamic.push('\n');
+        }
     }
 
-    // 5. Related tests
     if !ctx.test_functions.is_empty() {
-        prompt.push_str("=== RELATED TESTS ===\n");
+        dynamic.push_str("=== RELATED TESTS ===\n");
         for f in &ctx.test_functions {
-            prompt.push_str(&f.full_text);
-            prompt.push_str("\n\n");
+            dynamic.push_str(&f.full_text);
+            dynamic.push_str("\n\n");
         }
     }
 
-    // 6. Linter findings
     if !linter_findings.is_empty() {
-        prompt.push_str("=== LINTER FINDINGS ===\n");
+        dynamic.push_str("=== LINTER FINDINGS ===\n");
         for f in linter_findings {
-            prompt.push_str(&format!(
+            dynamic.push_str(&format!(
                 "{} at {}:{}\n",
                 f.code,
                 f.file.display(),
                 f.line
             ));
         }
-        prompt.push_str(
+        dynamic.push_str(
             "For each linter finding above, assess: is this a genuine risk or a \
              false positive given the context? Explain the actual consequence if real.\n\n",
         );
     }
 
-    // 7. Team rules
-    if !config.rules.is_empty() {
-        prompt.push_str("=== TEAM RULES ===\n");
-        prompt.push_str("Also check for these team-specific rules:\n");
-        for rule in &config.rules {
-            prompt.push_str(&format!("- [{}]: {}\n", rule.name, rule.description));
-        }
-        prompt.push('\n');
-    }
-
-    // 7. Output format (always last)
-    prompt.push_str("=== OUTPUT FORMAT ===\n");
-    prompt.push_str(OUTPUT_FORMAT);
-    prompt.push('\n');
-
-    prompt
+    PromptPartsOwned { system, cacheable, dynamic }
 }
+
 
 /// Fallback: build a prompt from a raw diff only (Phase 1 behaviour).
 pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bool) -> String {
     let diff = if estimate_tokens(&format_diff(diff)) > config.review.max_tokens {
-        truncate_to_budget(diff, config.review.max_tokens)
+        let original_files: Vec<std::path::PathBuf> =
+            diff.files.iter().map(|f| f.path.clone()).collect();
+        let trimmed = truncate_to_budget(diff, config.review.max_tokens);
+        let kept: std::collections::HashSet<_> =
+            trimmed.files.iter().map(|f| f.path.clone()).collect();
+        let dropped: Vec<_> = original_files
+            .iter()
+            .filter(|p| !kept.contains(*p))
+            .collect();
+        if !dropped.is_empty() {
+            eprintln!(
+                "warning: diff exceeded token budget; {} file(s) dropped from review:",
+                dropped.len()
+            );
+            for p in &dropped {
+                eprintln!("  - {}", p.display());
+            }
+        }
+        trimmed
     } else {
         diff.clone()
     };
@@ -165,20 +234,6 @@ pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bo
     prompt.push('\n');
 
     prompt
-}
-
-pub fn compress_function(fn_info: &FunctionInfo, max_lines: usize) -> String {
-    let body_lines: Vec<&str> = fn_info.signature.lines().collect();
-    if body_lines.len() <= max_lines {
-        return fn_info.signature.clone();
-    }
-    let truncated: Vec<&str> = body_lines.iter().take(max_lines).copied().collect();
-    let omitted = body_lines.len() - max_lines;
-    format!(
-        "{}\n// ... ({} lines omitted)",
-        truncated.join("\n"),
-        omitted
-    )
 }
 
 fn format_diff(diff: &ParsedDiff) -> String {
@@ -225,8 +280,157 @@ fn format_hunk(hunk: &DiffHunk) -> String {
     out
 }
 
+/// Rough char-to-token conversion. The OpenAI / Anthropic tokenizers cluster
+/// around 3.3-3.5 chars/token on source code (denser than prose), so the old
+/// `len/4` rule consistently *under*-estimated. Using `*2/7` (~3.5) gives us
+/// a small safety margin so the prompt rarely overshoots the API's context
+/// limit and gets truncated mid-response.
 pub fn estimate_tokens(text: &str) -> usize {
-    text.len() / 4
+    estimate_tokens_from_chars(text.len())
+}
+
+/// Same ratio as [`estimate_tokens`] but takes a precomputed char count for
+/// callers that already know the byte length and don't want to materialize a
+/// string to pass through the API.
+pub fn estimate_tokens_from_chars(chars: usize) -> usize {
+    chars.saturating_mul(2) / 7
+}
+
+/// Render a single type definition, keeping only the fields whose names
+/// appear somewhere in the diff text. A struct with 30 fields where the
+/// diff only touches 2 of them becomes a 2-field rendering — same signal
+/// for the reviewer at a tenth of the tokens. If no fields match we keep
+/// just the type name with `…`, which still tells the model the type
+/// existed without spending budget on every field.
+fn render_type(t: &crate::ast::TypeDef, diff_idents: &std::collections::HashSet<String>) -> Option<String> {
+    let kind = format!("{:?}", t.kind).to_lowercase();
+    if t.fields.is_empty() {
+        // Traits, type aliases, enums-with-no-payload — keep the name.
+        return Some(format!("{} {} {{ }}", kind, t.name));
+    }
+    let kept: Vec<&str> = t
+        .fields
+        .iter()
+        .filter(|f| diff_idents.contains(f.as_str()))
+        .map(|f| f.as_str())
+        .collect();
+    if kept.is_empty() {
+        return Some(format!("{} {} {{ … }}", kind, t.name));
+    }
+    let omitted = t.fields.len() - kept.len();
+    let mut body = kept.join(", ");
+    if omitted > 0 {
+        body.push_str(&format!(", /* +{} more */", omitted));
+    }
+    Some(format!("{} {} {{ {} }}", kind, t.name, body))
+}
+
+/// Extract identifier-like tokens from every line of the diff. Used to
+/// filter type-field renderings: a field the diff doesn't reference is
+/// almost never relevant to reviewing the diff.
+fn collect_diff_identifiers(diff: &ParsedDiff) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in &diff.files {
+        for hunk in &file.hunks {
+            for line in &hunk.lines {
+                let text = match line {
+                    DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.as_str(),
+                };
+                let mut current = String::new();
+                for ch in text.chars() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        current.push(ch);
+                    } else if !current.is_empty() {
+                        out.insert(std::mem::take(&mut current));
+                    }
+                }
+                if !current.is_empty() {
+                    out.insert(current);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Split a diff into chunks that each fit inside `max_tokens` worth of
+/// rendered output. Files larger than the budget on their own end up alone
+/// in a chunk; the truncator is the last line of defense for those.
+///
+/// This is the cheap alternative to truncation: instead of dropping the
+/// largest files when a diff blows the token budget, we run several review
+/// passes and merge their findings.
+pub fn chunk_diff_by_files(diff: &ParsedDiff, max_tokens: usize) -> Vec<ParsedDiff> {
+    use crate::git::DiffStats;
+
+    let budget_chars = max_tokens.saturating_mul(4);
+    if format_diff(diff).len() <= budget_chars || diff.files.len() <= 1 {
+        return vec![diff.clone()];
+    }
+
+    let mut chunks: Vec<Vec<crate::git::ChangedFile>> = Vec::new();
+    let mut current: Vec<crate::git::ChangedFile> = Vec::new();
+    let mut current_chars: usize = 0;
+
+    for file in &diff.files {
+        let single = format_one_file_diff(file);
+        let file_chars = single.len();
+
+        if file_chars > budget_chars {
+            // The file alone exceeds budget. Flush current chunk, then take
+            // this file as its own chunk — the existing truncator will trim
+            // its context lines further at prompt-build time.
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+                current_chars = 0;
+            }
+            chunks.push(vec![file.clone()]);
+            continue;
+        }
+
+        if current_chars + file_chars > budget_chars && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+        current.push(file.clone());
+        current_chars += file_chars;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+        .into_iter()
+        .map(|files| {
+            let lines_added: usize = files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .filter(|l| matches!(l, DiffLine::Added(_)))
+                .count();
+            let lines_removed: usize = files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .filter(|l| matches!(l, DiffLine::Removed(_)))
+                .count();
+            let files_changed = files.len();
+            ParsedDiff {
+                files,
+                stats: DiffStats { lines_added, lines_removed, files_changed },
+            }
+        })
+        .collect()
+}
+
+fn format_one_file_diff(file: &crate::git::ChangedFile) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("=== FILE: {} ===\n", file.path.display()));
+    for hunk in &file.hunks {
+        out.push_str(&format_hunk(hunk));
+    }
+    out.push('\n');
+    out
 }
 
 pub fn truncate_to_budget(diff: &ParsedDiff, max_tokens: usize) -> ParsedDiff {

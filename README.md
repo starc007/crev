@@ -13,14 +13,18 @@ context: Rich (4 types, 6 called fns, 2 tests)
 [!] HIGH src/payments/processor.rs:142
     balance + amount can exceed i64::MAX when processing large transfers;
     use checked_add() and return Err on overflow
+    │ let total = balance + amount;
 
 [~] MED  src/payments/processor.rs:98
     db.execute() result is silently ignored; if the INSERT fails, the caller
     receives a success response while the data was never written
+    │ db.execute(stmt);
 
 [✓] LGTM src/utils/format.rs — change looks correct
 
 3 findings (1 high, 1 med, 0 low) · 4.2s · qwen2.5-coder:14b
+note: dropped 1 hallucinated finding(s) (line/file not in diff)
+note: critique dropped 1 finding(s) as low-signal
 ```
 
 ---
@@ -83,6 +87,7 @@ Options:
   --fail-on <SEV>     Exit 1 if any finding at or above this severity [low|med|high]
   --security          Security-focused review mode
   --no-cloud          Never use a cloud LLM
+  --no-critique       Skip the self-critique pass (faster, slightly noisier)
   --path <PATH>       Path to git repo (default: current directory)
 ```
 
@@ -114,6 +119,7 @@ crev init --ci --model gpt-4o   # same, with OpenAI model + correct secret name
 ```
 
 Installs two hooks:
+
 - **pre-commit**: reviews staged changes before every commit
 - **pre-push**: reviews all unpushed commits only when pushing more than one — single commits are already covered by pre-commit
 
@@ -194,6 +200,8 @@ export OPENAI_BASE_URL=https://api.groq.com
 crev review --model llama-3.1-70b-versatile
 ```
 
+`OPENAI_BASE_URL` is validated: must use https and must not point at loopback or private hosts. For local vLLM/Ollama proxies set `CREV_ALLOW_INSECURE_BASE_URL=1`.
+
 ### Ollama local models
 
 Any model available in your Ollama instance works — crev picks the best one it finds automatically. Pull any coding model and crev will use it:
@@ -250,7 +258,6 @@ Personal defaults (model choice, API keys) go in `~/.config/crev/config.toml` �
 
 **Config lookup order:** `.reviewrc` (current dir → upward) → `~/.config/crev/config.toml` → built-in defaults.
 
-
 ## Output formats
 
 ### Terminal (default)
@@ -281,7 +288,8 @@ A spinner shows while the model analyzes. Each finding streams to the terminal a
       "severity": "High",
       "file": "src/payments/processor.rs",
       "line": 142,
-      "message": "balance + amount can exceed i64::MAX — use checked_add()"
+      "message": "balance + amount can exceed i64::MAX — use checked_add()",
+      "quote": "let total = balance + amount;"
     }
   ],
   "github_annotations": [
@@ -335,11 +343,11 @@ Then commit and push:
 
 **Triggers:**
 
-| Event | Behaviour |
-|---|---|
-| PR opened | Runs automatically |
-| `/crev` comment | Runs on demand, reacts with 👀 to acknowledge |
-| Push to PR branch | Does not run — comment `/crev` to re-review |
+| Event             | Behaviour                                     |
+| ----------------- | --------------------------------------------- |
+| PR opened         | Runs automatically                            |
+| `/crev` comment   | Runs on demand, reacts with 👀 to acknowledge |
+| Push to PR branch | Does not run — comment `/crev` to re-review   |
 
 ---
 
@@ -353,6 +361,50 @@ crev tracks every review in a local SQLite database. After the same finding appe
 ```
 
 This surfaces systemic issues that keep slipping through code review.
+
+---
+
+## Review quality
+
+crev does more than just pipe a diff into an LLM. Every finding goes through three filters before it reaches your terminal:
+
+### 1. Diff-aware validation
+
+LLMs regularly cite line numbers that don't exist in the diff — off-by-one from header lines, completely fabricated, or on the wrong file entirely. crev indexes every `(file, line)` pair the model was shown and:
+
+- **Drops** findings whose line/file isn't in the diff (`note: dropped N hallucinated finding(s)`).
+- **Re-anchors** findings within ±3 lines to the nearest real line, preferring lines the change *added* over surrounding context.
+- **Flags** findings that landed on a context line — they describe pre-existing code the change merely touches, not the change itself.
+
+### 2. Self-critique pass
+
+After the first review, crev sends the findings back through the model with a sharper "is each one specific, grounded, and actionable?" prompt. The model emits `KEEP` or `DROP` per finding; low-signal ones are removed before you see them. Skip with `--no-critique` if you want raw output.
+
+### 3. Source quotes
+
+Every accepted finding carries the cited source line as a `quote`, rendered dimmed under the description so you can judge correctness without leaving the terminal:
+
+```
+[!] HIGH src/payments/processor.rs:142
+    balance + amount can exceed i64::MAX — use checked_add()
+    │ let total = balance + amount;
+```
+
+---
+
+## Performance
+
+### Chunking for large diffs
+
+When the rendered diff exceeds `max_tokens`, crev splits it by file and runs the review across multiple chunks rather than dropping the biggest files entirely. Findings are merged, validated, and critiqued as one set.
+
+### Prompt caching
+
+The Anthropic backend uses Anthropic's prompt-caching API to mark the system prompt and stable user-block as cacheable. The diff and context (which change per call) stay uncached. The provider returns ~90% cost discount on the cached prefix within a 5-minute window — pre-commit hooks that re-review the same change multiple times effectively pay for the diff alone after the first call.
+
+### Self-update
+
+`crev update` downloads the install script, shows the URL, and asks for confirmation before running it. Skip the prompt with `CREV_UPDATE_YES=1` for non-interactive environments.
 
 ---
 
