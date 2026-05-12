@@ -294,14 +294,10 @@ async fn run_review(
         files: filtered_files,
     };
 
-    // Build semantic context and run linters in parallel (Phase 2 + 3)
+    // ── Linters run once on the whole diff ─────────────────────────────────
     let repo_root = git::find_repo_root(path)?;
     let ctx_builder = context::ContextBuilder::new(repo_root.clone(), cfg.review.max_tokens);
-
-    let (ctx_result, linter_findings) = tokio::join!(
-        ctx_builder.build(diff.clone()),
-        linters::run_linters(&diff, &repo_root),
-    );
+    let linter_findings = linters::run_linters(&diff, &repo_root).await;
 
     if !linter_findings.is_empty() {
         let by_tool: std::collections::HashMap<&str, usize> =
@@ -313,18 +309,6 @@ async fn run_review(
         eprintln!("linters: {} findings in diff ({})", linter_findings.len(), summary.join(", "));
     }
 
-    let prompt_parts = match ctx_result {
-        Ok(ctx) => Some(prompt::build_review_prompt_parts_ctx(&ctx, &cfg, security, &linter_findings)),
-        Err(e) => {
-            eprintln!("context: Minimal (fallback to diff-only: {})", e);
-            None
-        }
-    };
-    let prompt_text: String = match &prompt_parts {
-        Some(parts) => parts.to_combined(),
-        None => prompt::build_review_prompt(&diff, &cfg, security),
-    };
-
     // Show recurring patterns before the review output
     if let Ok(patterns) = history::detect_patterns(&repo_root) {
         for p in &patterns {
@@ -335,6 +319,21 @@ async fn run_review(
             );
         }
     }
+
+    // ── Chunk if the diff is too large for a single pass ───────────────────
+    let chunks = prompt::chunk_diff_by_files(&diff, cfg.review.max_tokens);
+    let is_chunked = chunks.len() > 1;
+    if is_chunked {
+        eprintln!(
+            "diff too large for a single review pass; splitting into {} chunks",
+            chunks.len()
+        );
+    }
+
+    // When critique or chunking is on we buffer findings instead of streaming
+    // them, because retroactively dropping a finding that already scrolled by
+    // is more confusing than helpful.
+    let stream_live = !json && no_critique && !is_chunked;
 
     // ── Spinner ──────────────────────────────────────────────────────────────
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
@@ -358,84 +357,114 @@ async fn run_review(
             }
         }
     });
-
-    // ── Stream completion, buffer complete lines ──────────────────────────────
-    let line_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
-    let line_buf2 = line_buf.clone();
-    let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    let line_tx2 = line_tx.clone();
+    let mut spinner_task = Some(spinner_task);
 
     let start = Instant::now();
-    let token_callback = move |token: &str| {
-        let mut buf = line_buf2.lock().unwrap();
-        buf.push_str(token);
-        while let Some(nl) = buf.find('\n') {
-            let line = buf[..nl].to_string();
-            *buf = buf[nl + 1..].to_string();
-            if !line.trim().is_empty() {
-                let _ = line_tx2.send(line);
-            }
-        }
-    };
-    let _full_response = match &prompt_parts {
-        Some(parts) => backend.complete_parts(parts.as_parts(), &token_callback).await?,
-        None => backend.complete(&prompt_text, &token_callback).await?,
-    };
-
-    // Flush any remaining content not terminated with a newline
-    {
-        let buf = line_buf.lock().unwrap();
-        if !buf.trim().is_empty() {
-            let _ = line_tx.send(buf.trim().to_string());
-        }
-    }
-    drop(line_tx); // close channel so receiver loop exits
-
-    // ── Consume lines: stop spinner then collect / print each finding ────────
-    // When critique is enabled we buffer findings instead of streaming them,
-    // because a finding the model will later drop in critique shouldn't have
-    // already been shown to the user. JSON output is always buffered.
-    let stream_live = !json && no_critique;
     let validator = validate::DiffIndex::from_diff(&diff);
     let mut findings: Vec<output::Finding> = Vec::new();
     let mut dropped_findings: Vec<(output::Finding, validate::DropReason)> = Vec::new();
     let mut reanchored_count: usize = 0;
     let mut context_only_count: usize = 0;
-    let mut spinner_task = Some(spinner_task);
+    let mut last_prompt_text: String = String::new();
 
-    while let Some(line) = line_rx.recv().await {
-        if let Some(raw) = output::try_parse_finding_line(&line) {
-            if stream_live {
-                if let Some(task) = spinner_task.take() {
-                    stop_tx.send(true).ok();
-                    task.await.ok();
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        if is_chunked {
+            eprintln!(
+                "\rreviewing chunk {}/{} ({} file(s))",
+                chunk_idx + 1,
+                chunks.len(),
+                chunk.files.len()
+            );
+        }
+
+        // Per-chunk context build + prompt
+        let ctx_result = ctx_builder.build(chunk.clone()).await;
+        let chunk_linter_findings: Vec<linters::LinterFinding> = linter_findings
+            .iter()
+            .filter(|f| chunk.files.iter().any(|cf| cf.path == f.file))
+            .cloned()
+            .collect();
+
+        let prompt_parts = match ctx_result {
+            Ok(ctx) => Some(prompt::build_review_prompt_parts_ctx(
+                &ctx, &cfg, security, &chunk_linter_findings,
+            )),
+            Err(e) => {
+                eprintln!("context: Minimal (fallback to diff-only: {})", e);
+                None
+            }
+        };
+        let prompt_text: String = match &prompt_parts {
+            Some(parts) => parts.to_combined(),
+            None => prompt::build_review_prompt(chunk, &cfg, security),
+        };
+        last_prompt_text = prompt_text.clone();
+
+        // ── Stream completion for this chunk, buffer complete lines ───────
+        let line_buf: Arc<Mutex<String>> = Arc::new(Mutex::new(String::new()));
+        let line_buf2 = line_buf.clone();
+        let (line_tx, mut line_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let line_tx2 = line_tx.clone();
+        let token_callback = move |token: &str| {
+            let mut buf = line_buf2.lock().unwrap();
+            buf.push_str(token);
+            while let Some(nl) = buf.find('\n') {
+                let line = buf[..nl].to_string();
+                *buf = buf[nl + 1..].to_string();
+                if !line.trim().is_empty() {
+                    let _ = line_tx2.send(line);
                 }
             }
+        };
+        let _full_response = match &prompt_parts {
+            Some(parts) => backend.complete_parts(parts.as_parts(), &token_callback).await?,
+            None => backend.complete(&prompt_text, &token_callback).await?,
+        };
 
-            let (kept, outcome) = validator.apply(raw.clone());
-            if let validate::Validation::Reanchor { .. } = outcome {
-                reanchored_count += 1;
+        // Flush trailing content
+        {
+            let buf = line_buf.lock().unwrap();
+            if !buf.trim().is_empty() {
+                let _ = line_tx.send(buf.trim().to_string());
             }
-            let counts_as_context_only = matches!(
-                outcome,
-                validate::Validation::Accept { on_change: false } | validate::Validation::Reanchor { on_change: false, .. }
-            ) && !matches!(raw.severity, output::Severity::Lgtm)
-                && raw.line.is_some()
-                && !raw.file.as_os_str().is_empty();
-            if counts_as_context_only {
-                context_only_count += 1;
-            }
+        }
+        drop(line_tx);
 
-            match kept {
-                Some(f) => {
-                    if stream_live {
-                        output::print_finding(&f);
+        // Consume per-chunk parsed findings into the global state.
+        while let Some(line) = line_rx.recv().await {
+            if let Some(raw) = output::try_parse_finding_line(&line) {
+                if stream_live {
+                    if let Some(task) = spinner_task.take() {
+                        stop_tx.send(true).ok();
+                        task.await.ok();
                     }
-                    findings.push(f);
                 }
-                None => {
-                    if let validate::Validation::Drop(reason) = outcome {
-                        dropped_findings.push((raw, reason));
+
+                let (kept, outcome) = validator.apply(raw.clone());
+                if let validate::Validation::Reanchor { .. } = outcome {
+                    reanchored_count += 1;
+                }
+                let counts_as_context_only = matches!(
+                    outcome,
+                    validate::Validation::Accept { on_change: false } | validate::Validation::Reanchor { on_change: false, .. }
+                ) && !matches!(raw.severity, output::Severity::Lgtm)
+                    && raw.line.is_some()
+                    && !raw.file.as_os_str().is_empty();
+                if counts_as_context_only {
+                    context_only_count += 1;
+                }
+
+                match kept {
+                    Some(f) => {
+                        if stream_live {
+                            output::print_finding(&f);
+                        }
+                        findings.push(f);
+                    }
+                    None => {
+                        if let validate::Validation::Drop(reason) = outcome {
+                            dropped_findings.push((raw, reason));
+                        }
                     }
                 }
             }
@@ -443,10 +472,10 @@ async fn run_review(
     }
 
     // Run critique pass before the spinner is dismissed so the user sees a
-    // single uninterrupted "analyzing..." spinner across both LLM calls.
+    // single uninterrupted "analyzing..." spinner across all LLM calls.
     let mut critique_dropped: Vec<(output::Finding, String)> = Vec::new();
     if !no_critique && !json && !findings.is_empty() {
-        match critique::run_critique(findings.clone(), backend.as_ref(), &prompt_text).await {
+        match critique::run_critique(findings.clone(), backend.as_ref(), &last_prompt_text).await {
             Ok(result) => {
                 findings = result.kept;
                 critique_dropped = result.dropped;

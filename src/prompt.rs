@@ -364,6 +364,86 @@ pub fn estimate_tokens(text: &str) -> usize {
     text.len() / 4
 }
 
+/// Split a diff into chunks that each fit inside `max_tokens` worth of
+/// rendered output. Files larger than the budget on their own end up alone
+/// in a chunk; the truncator is the last line of defense for those.
+///
+/// This is the cheap alternative to truncation: instead of dropping the
+/// largest files when a diff blows the token budget, we run several review
+/// passes and merge their findings.
+pub fn chunk_diff_by_files(diff: &ParsedDiff, max_tokens: usize) -> Vec<ParsedDiff> {
+    use crate::git::DiffStats;
+
+    let budget_chars = max_tokens.saturating_mul(4);
+    if format_diff(diff).len() <= budget_chars || diff.files.len() <= 1 {
+        return vec![diff.clone()];
+    }
+
+    let mut chunks: Vec<Vec<crate::git::ChangedFile>> = Vec::new();
+    let mut current: Vec<crate::git::ChangedFile> = Vec::new();
+    let mut current_chars: usize = 0;
+
+    for file in &diff.files {
+        let single = format_one_file_diff(file);
+        let file_chars = single.len();
+
+        if file_chars > budget_chars {
+            // The file alone exceeds budget. Flush current chunk, then take
+            // this file as its own chunk — the existing truncator will trim
+            // its context lines further at prompt-build time.
+            if !current.is_empty() {
+                chunks.push(std::mem::take(&mut current));
+                current_chars = 0;
+            }
+            chunks.push(vec![file.clone()]);
+            continue;
+        }
+
+        if current_chars + file_chars > budget_chars && !current.is_empty() {
+            chunks.push(std::mem::take(&mut current));
+            current_chars = 0;
+        }
+        current.push(file.clone());
+        current_chars += file_chars;
+    }
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    chunks
+        .into_iter()
+        .map(|files| {
+            let lines_added: usize = files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .filter(|l| matches!(l, DiffLine::Added(_)))
+                .count();
+            let lines_removed: usize = files
+                .iter()
+                .flat_map(|f| f.hunks.iter())
+                .flat_map(|h| h.lines.iter())
+                .filter(|l| matches!(l, DiffLine::Removed(_)))
+                .count();
+            let files_changed = files.len();
+            ParsedDiff {
+                files,
+                stats: DiffStats { lines_added, lines_removed, files_changed },
+            }
+        })
+        .collect()
+}
+
+fn format_one_file_diff(file: &crate::git::ChangedFile) -> String {
+    let mut out = String::new();
+    out.push_str(&format!("=== FILE: {} ===\n", file.path.display()));
+    for hunk in &file.hunks {
+        out.push_str(&format_hunk(hunk));
+    }
+    out.push('\n');
+    out
+}
+
 pub fn truncate_to_budget(diff: &ParsedDiff, max_tokens: usize) -> ParsedDiff {
     use crate::git::{ChangedFile, DiffHunk, DiffStats};
 
