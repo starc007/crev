@@ -128,7 +128,7 @@ pub fn build_review_prompt_ctx(
         prompt.push('\n');
     }
 
-    // 7. Output format (always last)
+    // 8. Output format (always last)
     prompt.push_str("=== OUTPUT FORMAT ===\n");
     prompt.push_str(OUTPUT_FORMAT);
     prompt.push('\n');
