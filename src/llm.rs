@@ -196,7 +196,10 @@ impl LlmBackend for AnthropicBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("Anthropic API returned {}: {}", status, body);
         }
 
@@ -358,7 +361,10 @@ impl LlmBackend for OpenAiBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("OpenAI API returned {}: {}", status, body);
         }
 
@@ -469,7 +475,10 @@ impl LlmBackend for GeminiBackend {
 
         if !resp.status().is_success() {
             let status = resp.status();
-            let body = resp.text().await.unwrap_or_default();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|e| format!("<failed to read response body: {}>", e));
             anyhow::bail!("Gemini API returned {}: {}", status, body);
         }
 
