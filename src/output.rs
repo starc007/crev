@@ -40,44 +40,6 @@ pub struct Finding {
     pub message: String,
 }
 
-pub fn parse_findings(llm_output: &str) -> Vec<Finding> {
-    let mut findings = Vec::new();
-
-    for line in llm_output.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-
-        // Match [HIGH], [MED], [LOW] patterns
-        if let Some(finding) = parse_severity_line(line) {
-            findings.push(finding);
-            continue;
-        }
-
-        // Match LGTM: ...
-        if line.starts_with("LGTM:") || line.starts_with("LGTM ") {
-            let msg = line
-                .trim_start_matches("LGTM:")
-                .trim_start_matches("LGTM")
-                .trim()
-                .to_string();
-            findings.push(Finding {
-                severity: Severity::Lgtm,
-                file: PathBuf::new(),
-                line: None,
-                message: if msg.is_empty() {
-                    "No issues found.".to_string()
-                } else {
-                    msg
-                },
-            });
-        }
-    }
-
-    findings
-}
-
 fn parse_severity_line(line: &str) -> Option<Finding> {
     // Patterns: [HIGH] path:42 — msg  or  [MED]  path:42 — msg  or [LOW] path:42 — msg
     let (severity, rest) = if let Some(r) = line.strip_prefix("[HIGH]") {
@@ -187,58 +149,6 @@ pub fn print_summary(findings: &[Finding], elapsed: Duration, model: &str) {
         high + med + low, high, med, low, elapsed.as_secs_f64(), model
     );
     println!("\n{}", summary.dimmed());
-}
-
-pub fn print_findings(findings: &[Finding], elapsed: Duration, model: &str) {
-    if findings.is_empty() {
-        println!("{}", "[✓] No findings — review output was empty.".green());
-        return;
-    }
-
-    let mut high = 0;
-    let mut med = 0;
-    let mut low = 0;
-    let mut has_lgtm = false;
-
-    for finding in findings {
-        match finding.severity {
-            Severity::High => {
-                high += 1;
-                let prefix = "[!] HIGH ".bold().red();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location.bold());
-                println!("    {}", finding.message);
-            }
-            Severity::Med => {
-                med += 1;
-                let prefix = "[~] MED  ".yellow();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location);
-                println!("    {}", finding.message);
-            }
-            Severity::Low => {
-                low += 1;
-                let prefix = "[i] LOW  ".blue();
-                let location = format_location(&finding.file, finding.line);
-                println!("{}{}", prefix, location);
-                println!("    {}", finding.message);
-            }
-            Severity::Lgtm => {
-                has_lgtm = true;
-                println!("{} {}", "[✓] LGTM".green().bold(), finding.message.green());
-            }
-        }
-    }
-
-    if !has_lgtm {
-        let total = high + med + low;
-        let elapsed_secs = elapsed.as_secs_f64();
-        let summary = format!(
-            "{} findings ({} high, {} med, {} low) · {:.1}s · {}",
-            total, high, med, low, elapsed_secs, model
-        );
-        println!("\n{}", summary.dimmed());
-    }
 }
 
 fn format_location(file: &PathBuf, line: Option<u32>) -> String {

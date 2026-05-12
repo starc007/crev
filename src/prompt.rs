@@ -1,4 +1,3 @@
-use crate::ast::FunctionInfo;
 use crate::config::Config;
 use crate::context::ReviewContext;
 use crate::git::{DiffHunk, DiffLine, ParsedDiff};
@@ -183,20 +182,6 @@ pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bo
     prompt.push('\n');
 
     prompt
-}
-
-pub fn compress_function(fn_info: &FunctionInfo, max_lines: usize) -> String {
-    let body_lines: Vec<&str> = fn_info.signature.lines().collect();
-    if body_lines.len() <= max_lines {
-        return fn_info.signature.clone();
-    }
-    let truncated: Vec<&str> = body_lines.iter().take(max_lines).copied().collect();
-    let omitted = body_lines.len() - max_lines;
-    format!(
-        "{}\n// ... ({} lines omitted)",
-        truncated.join("\n"),
-        omitted
-    )
 }
 
 fn format_diff(diff: &ParsedDiff) -> String {
