@@ -9,7 +9,7 @@ mod ollama;
 mod output;
 mod prompt;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -551,16 +551,65 @@ fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
     git::find_repo_root(start)
 }
 
+const INSTALL_SCRIPT_URL: &str =
+    "https://raw.githubusercontent.com/starc007/crev/main/install.sh";
+
 fn run_update() -> Result<()> {
-    eprintln!("Updating crev to the latest version...");
-    let status = std::process::Command::new("sh")
-        .args([
-            "-c",
-            "curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh",
-        ])
-        .status()?;
+    eprintln!("crev update will download and execute:");
+    eprintln!("  {}", INSTALL_SCRIPT_URL);
+    eprintln!();
+    eprintln!("The script verifies the binary's SHA256 before installing, but the");
+    eprintln!("script itself is fetched from the main branch and is not pinned.");
+    eprintln!("Inspect it first if you don't trust the repo state.");
+    eprintln!();
+
+    let non_interactive =
+        std::env::var("CREV_UPDATE_YES").is_ok() || !std::io::IsTerminal::is_terminal(&std::io::stdin());
+
+    if !non_interactive {
+        eprint!("Proceed? [y/N] ");
+        use std::io::Write;
+        std::io::stderr().flush().ok();
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        let answer = answer.trim().to_lowercase();
+        if answer != "y" && answer != "yes" {
+            eprintln!("Aborted.");
+            return Ok(());
+        }
+    }
+
+    // Fetch the script first so a transient network error doesn't leave a
+    // half-downloaded pipe partially executed by sh.
+    let script = std::process::Command::new("curl")
+        .args(["-fsSL", INSTALL_SCRIPT_URL])
+        .output()
+        .context("Failed to invoke curl")?;
+    if !script.status.success() {
+        anyhow::bail!(
+            "Failed to download install script: {}",
+            String::from_utf8_lossy(&script.stderr)
+        );
+    }
+
+    let mut child = std::process::Command::new("sh")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .context("Failed to spawn sh")?;
+    {
+        use std::io::Write;
+        let stdin = child
+            .stdin
+            .as_mut()
+            .context("Failed to open sh stdin")?;
+        stdin.write_all(&script.stdout)?;
+    }
+    let status = child.wait()?;
     if !status.success() {
-        anyhow::bail!("Update failed. Try running the install script manually:\n  curl -fsSL https://raw.githubusercontent.com/starc007/crev/main/install.sh | sh");
+        anyhow::bail!(
+            "Update failed. Try running the install script manually:\n  curl -fsSL {} | sh",
+            INSTALL_SCRIPT_URL
+        );
     }
     Ok(())
 }
