@@ -300,6 +300,10 @@ impl ContextBuilder {
     }
 
 
+    /// Fit context into the token budget using a tiered allocation:
+    /// types 25% · called fns 60% · tests 15% of the budget left over after
+    /// the diff. Each tier overflows into the remaining global pool only
+    /// after its own cap is reached, so no category can starve the others.
     fn fit_to_budget(
         &self,
         diff: &ParsedDiff,
@@ -309,47 +313,43 @@ impl ContextBuilder {
     ) -> (Vec<TypeDef>, Vec<FunctionInfo>, Vec<FunctionInfo>) {
         use crate::git::DiffLine;
 
-        // Estimate diff tokens from actual line content (same as it appears in the prompt)
+        // Estimate diff tokens from the actual rendered line content.
         let diff_chars: usize = diff.files.iter().flat_map(|f| f.hunks.iter()).flat_map(|h| h.lines.iter()).map(|l| match l {
             DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.len() + 8,
         }).sum();
-        let mut used = diff_chars / 4; // ~4 chars per token
-        let budget = self.max_tokens;
+        let diff_tokens = diff_chars / 4;
+        let total_budget = self.max_tokens;
+        let context_budget = total_budget.saturating_sub(diff_tokens);
 
-        let mut kept_types = Vec::new();
-        let mut kept_called = Vec::new();
-        let mut kept_tests = Vec::new();
+        // Per-tier caps. Numerator/denominator written explicitly so the
+        // allocation is easy to read and to tune.
+        let types_cap = context_budget * 25 / 100;
+        let called_cap = context_budget * 60 / 100;
+        let tests_cap = context_budget * 15 / 100;
 
-        // Types: estimate from field list
-        for t in types {
-            let cost = estimate_tokens(&t.fields.join(", ")) + estimate_tokens(&t.name) + 4;
-            if used.saturating_add(cost) <= budget {
-                used = used.saturating_add(cost);
-                kept_types.push(t.clone());
+        // Each tier first spends from its own cap; whatever it leaves behind
+        // gets recycled into the global pool the next tier can also draw on.
+        let mut global_pool = context_budget;
+
+        let (kept_types, types_spent) = fill_tier(types, types_cap, &mut global_pool, |t| {
+            estimate_tokens(&t.fields.join(", ")) + estimate_tokens(&t.name) + 4
+        });
+
+        let (kept_called, called_spent) = fill_tier(called, called_cap, &mut global_pool, |f| {
+            if f.full_text.is_empty() {
+                return 0;
             }
-        }
+            estimate_tokens(&distill_function(f, MAX_CALLED_FN_LINES))
+        });
 
-        // Called functions — estimate using the distilled form, since
-        // that's what the prompt will actually ship.
-        for f in called {
-            if f.full_text.is_empty() { continue; }
-            let cost = estimate_tokens(&distill_function(f, MAX_CALLED_FN_LINES));
-            if used.saturating_add(cost) <= budget {
-                used = used.saturating_add(cost);
-                kept_called.push(f.clone());
+        let (kept_tests, tests_spent) = fill_tier(tests, tests_cap, &mut global_pool, |f| {
+            if f.full_text.is_empty() {
+                return 0;
             }
-        }
+            estimate_tokens(&f.full_text)
+        });
 
-        // Tests (full body)
-        for f in tests {
-            if f.full_text.is_empty() { continue; }
-            let cost = estimate_tokens(&f.full_text);
-            if used.saturating_add(cost) <= budget {
-                used = used.saturating_add(cost);
-                kept_tests.push(f.clone());
-            }
-        }
-
+        let _ = (types_spent, called_spent, tests_spent);
         (kept_types, kept_called, kept_tests)
     }
 }
@@ -359,6 +359,36 @@ fn is_source_file(path: &Path) -> bool {
         path.extension().and_then(|e| e.to_str()),
         Some("rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go")
     )
+}
+
+/// Greedy-pack `items` into a per-tier cap, drawing from `pool` (the shared
+/// remaining budget) only after the tier's own cap is exhausted. Returns the
+/// kept items and total cost spent. `pool` is decremented in place so the
+/// next tier can see how much slack is left.
+fn fill_tier<T: Clone>(
+    items: &[T],
+    tier_cap: usize,
+    pool: &mut usize,
+    cost_of: impl Fn(&T) -> usize,
+) -> (Vec<T>, usize) {
+    let mut kept = Vec::new();
+    let mut tier_spent = 0usize;
+    for item in items {
+        let cost = cost_of(item);
+        if cost == 0 {
+            continue;
+        }
+        if tier_spent + cost <= tier_cap {
+            tier_spent += cost;
+            *pool = pool.saturating_sub(cost);
+            kept.push(item.clone());
+        } else if *pool >= cost {
+            // Tier cap hit — keep drawing from the shared remainder if any.
+            *pool -= cost;
+            kept.push(item.clone());
+        }
+    }
+    (kept, tier_spent)
 }
 
 /// Resolve called-function names against the prebuilt index. When multiple
