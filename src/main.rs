@@ -297,6 +297,9 @@ async fn run_review(
     // ── Linters run once on the whole diff ─────────────────────────────────
     let repo_root = git::find_repo_root(path)?;
     let ctx_builder = context::ContextBuilder::new(repo_root.clone(), cfg.review.max_tokens);
+    // Build the repo index exactly once and reuse it across every chunk's
+    // context build. Without this, a 5-chunk review re-walks the repo 5x.
+    let repo_index = std::sync::Arc::new(context::RepoIndex::build(&repo_root, ctx_builder.parser()));
     let linter_findings = linters::run_linters(&diff, &repo_root).await;
 
     if !linter_findings.is_empty() {
@@ -377,8 +380,9 @@ async fn run_review(
             );
         }
 
-        // Per-chunk context build + prompt
-        let ctx_result = ctx_builder.build(chunk.clone()).await;
+        // Per-chunk context build + prompt — index is shared so we don't
+        // walk the repo again for every chunk.
+        let ctx_result = ctx_builder.build(chunk.clone(), repo_index.as_ref()).await;
         let chunk_linter_findings: Vec<linters::LinterFinding> = linter_findings
             .iter()
             .filter(|f| chunk.files.iter().any(|cf| cf.path == f.file))
