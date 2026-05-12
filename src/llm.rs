@@ -245,9 +245,67 @@ impl OpenAiBackend {
     fn new(model: String) -> Result<Self> {
         let api_key = std::env::var("OPENAI_API_KEY")
             .context("$OPENAI_API_KEY is not set")?;
-        let base_url = std::env::var("OPENAI_BASE_URL")
-            .unwrap_or_else(|_| "https://api.openai.com".to_string());
+        let base_url = match std::env::var("OPENAI_BASE_URL") {
+            Ok(url) => {
+                validate_base_url(&url)?;
+                url
+            }
+            Err(_) => "https://api.openai.com".to_string(),
+        };
         Ok(Self { api_key, base_url, model })
+    }
+}
+
+fn validate_base_url(url: &str) -> Result<()> {
+    let parsed = reqwest::Url::parse(url)
+        .with_context(|| format!("OPENAI_BASE_URL is not a valid URL: {}", url))?;
+
+    // Require https unless explicitly opted in.
+    let allow_http = std::env::var("CREV_ALLOW_INSECURE_BASE_URL").is_ok();
+    let scheme = parsed.scheme();
+    if scheme != "https" && !allow_http {
+        anyhow::bail!(
+            "OPENAI_BASE_URL must use https (got {}). Set CREV_ALLOW_INSECURE_BASE_URL=1 to override.",
+            scheme
+        );
+    }
+
+    // Reject loopback/private hosts unless explicitly allowed.
+    let host = parsed.host_str().unwrap_or("");
+    if !allow_http && is_private_or_loopback(host) {
+        anyhow::bail!(
+            "OPENAI_BASE_URL points at a private or loopback host ({}). \
+             Set CREV_ALLOW_INSECURE_BASE_URL=1 if this is intentional.",
+            host
+        );
+    }
+    Ok(())
+}
+
+fn is_private_or_loopback(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host == "0.0.0.0" || host == "::" {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip.is_loopback() || is_private_ip(&ip) || ip.is_unspecified();
+    }
+    false
+}
+
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            o[0] == 10
+                || (o[0] == 172 && (16..=31).contains(&o[1]))
+                || (o[0] == 192 && o[1] == 168)
+                || (o[0] == 169 && o[1] == 254)
+        }
+        IpAddr::V6(v6) => {
+            let seg = v6.segments()[0];
+            (seg & 0xfe00) == 0xfc00 || (seg & 0xffc0) == 0xfe80
+        }
     }
 }
 
