@@ -8,17 +8,19 @@ Architecture reference for contributors and AI assistants working on this repo.
 
 | File | Purpose |
 |---|---|
-| `src/main.rs` | CLI entrypoint, clap commands, review orchestration, spinner, streaming output |
-| `src/llm.rs` | Trait-based LLM backend system (Ollama, Anthropic, OpenAI, Gemini) |
+| `src/main.rs` | CLI entrypoint, clap commands, chunk-aware review orchestration, spinner, streaming output |
+| `src/llm.rs` | Trait-based LLM backend system (Ollama, Anthropic, OpenAI, Gemini), prompt caching support via `PromptParts` |
 | `src/ollama.rs` | Ollama HTTP client — streaming, model detection, health check |
 | `src/git.rs` | git2 wrapper — staged/unstaged/commit/range diffs → `ParsedDiff` |
 | `src/ast.rs` | tree-sitter multi-language parser — functions, types, call graph |
 | `src/context.rs` | Builds `ReviewContext` from a diff: finds changed fns, resolves call defs, fits into token budget |
-| `src/prompt.rs` | Assembles the final LLM prompt from `ReviewContext` + config rules |
-| `src/output.rs` | Parses LLM output lines into `Finding` structs, pretty-prints with colors, JSON output |
-| `src/config.rs` | Loads `.reviewrc` (repo-local) and `~/.config/crev/config.toml` (global) |
+| `src/prompt.rs` | Assembles the LLM prompt; emits `PromptPartsOwned` for cache-aware backends; chunks oversize diffs |
+| `src/output.rs` | Parses LLM output lines into `Finding` structs (incl. cited source `quote`), pretty-prints with colors, JSON output |
+| `src/validate.rs` | Diff-aware validator: drops findings citing lines not in the diff, re-anchors near-misses, attaches source quote |
+| `src/critique.rs` | Second LLM pass that filters low-signal findings (KEEP/DROP per finding); opt-out via `--no-critique` |
+| `src/config.rs` | Loads `.reviewrc` (repo-local) and `~/.config/crev/config.toml` (global), guards ignore-glob patterns |
 | `src/history.rs` | SQLite review history — saves reviews, detects recurring patterns |
-| `src/linters.rs` | Runs language linters (clippy, eslint, ruff, golangci-lint) and filters findings to diff lines |
+| `src/linters.rs` | Runs language linters (clippy, eslint, ruff, golangci-lint, semgrep) and filters findings to diff lines |
 
 ---
 
@@ -28,16 +30,23 @@ Architecture reference for contributors and AI assistants working on this repo.
 git diff
   └─▶ git.rs::get_*_diff()
         └─▶ ParsedDiff { files[], stats }
-              └─▶ context.rs::ContextBuilder::build()
-                    ├─ ast.rs  → functions_changed, called_functions, test_functions
-                    ├─ token budget fit (priority: diff > types > called fns > tests)
-                    └─▶ ReviewContext
-                          └─▶ prompt.rs::build_review_prompt()
-                                └─▶ String (prompt)
-                                      └─▶ llm.rs::resolve() → backend.complete()
-                                            └─▶ on_token callback (line buffering → mpsc channel)
-                                                  └─▶ output.rs::try_parse_finding_line()
-                                                        └─▶ Finding[] → print / JSON
+              └─▶ ignore-glob filter (config.rs)
+                    └─▶ linters::run_linters()  (once, whole diff)
+                          └─▶ prompt::chunk_diff_by_files()
+                                └─▶ for each chunk:
+                                      ├─ context.rs::ContextBuilder::build()  → ReviewContext
+                                      ├─ prompt::build_review_prompt_parts_ctx() → PromptPartsOwned
+                                      └─ backend.complete_parts(parts)  (Anthropic: cache_control on system+cacheable)
+                                            └─▶ on_token → mpsc channel → output::try_parse_finding_line()
+                                                  └─▶ raw Finding[]
+                                └─▶ validate::DiffIndex.apply() per finding
+                                      ├─ drop if line/file not in diff
+                                      ├─ re-anchor (prefer Added) if within ±3 lines
+                                      ├─ attach source quote
+                                      └─▶ kept Finding[]
+                                └─▶ critique::run_critique() (KEEP/DROP per finding)
+                                      └─▶ surviving Finding[]
+                                            └─▶ print / JSON / history / fail_on
 ```
 
 ---
@@ -61,11 +70,28 @@ ReviewContext { diff, functions_changed, called_functions, types_used, test_func
 ContextQuality = Rich | Partial | Minimal
 
 // output.rs
-Finding { severity: Severity, file, line, message }
+Finding { severity: Severity, file, line, message, quote: Option<String> }
 Severity = High | Med | Low | Lgtm
 
+// validate.rs
+DiffIndex { files: HashMap<String, FileLines> }
+FileLines { added: HashSet<u32>, context: HashSet<u32>, content: HashMap<u32, String> }
+Validation = Accept { on_change } | Reanchor { from, to, on_change } | Drop(DropReason)
+DropReason = UnknownFile | LineNotInDiff
+
+// critique.rs
+CritiqueResult { kept: Vec<Finding>, dropped: Vec<(Finding, String)> }
+
 // llm.rs
-trait LlmBackend { complete(prompt, on_token) -> Result<String>; name(); is_local() }
+PromptParts<'a> { system: &str, cacheable: &str, dynamic: &str }
+trait LlmBackend {
+    complete(prompt, on_token) -> Result<String>;
+    complete_parts(parts, on_token) -> Result<String>;   // default impl concatenates
+    name(); is_local();
+}
+
+// prompt.rs
+PromptPartsOwned { system: String, cacheable: String, dynamic: String }
 ```
 
 ---
@@ -82,8 +108,11 @@ Each backend implements `LlmBackend::complete()` which streams tokens via the `o
 
 **API key env vars:**
 - Anthropic: `ANTHROPIC_API_KEY` (or `api_key_env` in config)
-- OpenAI: `OPENAI_API_KEY`, base URL override: `OPENAI_BASE_URL`
-- Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY`
+- OpenAI: `OPENAI_API_KEY`, base URL override: `OPENAI_BASE_URL` (validated: https + non-private host; set `CREV_ALLOW_INSECURE_BASE_URL=1` for local proxies)
+- Gemini: `GEMINI_API_KEY` or `GOOGLE_API_KEY` (sent via `x-goog-api-key` header, never in URL)
+
+**Prompt caching (Anthropic only):**
+`AnthropicBackend::complete_parts` sets `cache_control: { type: "ephemeral" }` on the system block and the stable `cacheable` user block (team rules + output format). The `dynamic` block (diff + context + linter findings) stays uncached. 90% cost discount on the cached prefix within a 5-minute window. Anthropic-only — other backends concatenate via the default trait impl.
 
 ---
 
@@ -104,18 +133,44 @@ Token budget priority: diff content → type defs → called function bodies →
 - `Partial` — some context but not rich
 - `Minimal` — diff only
 
+**Safety caps:** files over 1 MiB are skipped; the walker stops after 5,000 source files (prevents pathological repos from making `build()` run for minutes).
+
+---
+
+## Chunking (`src/prompt.rs::chunk_diff_by_files`)
+
+When the rendered diff exceeds `max_tokens * 4` chars, `chunk_diff_by_files` greedily packs files into chunks under budget. Files that exceed budget alone become their own chunk and the existing truncator trims their context lines further at prompt-build time. `run_review` loops over chunks, building context and prompt per chunk; linter findings come from a single whole-diff run and are filtered per chunk.
+
+---
+
+## Validation + critique (`src/validate.rs`, `src/critique.rs`)
+
+After each chunk's LLM call, raw findings pass through `DiffIndex::apply`:
+- Line in **Added** set → accept, mark `on_change: true`
+- Line in **Context** set → accept, mark `on_change: false` (surfaces in summary as "references unchanged context lines")
+- Within ±3 lines of a real line → re-anchor (prefer Added)
+- Otherwise → drop (`UnknownFile` or `LineNotInDiff`)
+
+Accepted findings get the cited source line attached as `quote`.
+
+After all chunks have been validated, `critique::run_critique` runs one more LLM call asking the model to grade each kept finding as KEEP or DROP. Unparsed decisions default to KEEP so a broken critique response can't hide a real finding. Skip with `--no-critique` to recover the live-streaming UX.
+
 ---
 
 ## Streaming output (`src/main.rs`)
 
-Findings stream to the terminal as soon as each line arrives from the LLM:
+Two modes:
 
-1. Spinner runs on a separate tokio task (watch channel stop signal)
-2. `on_token` callback buffers tokens, sends complete lines via unbounded mpsc channel
-3. Consumer loop receives lines, calls `output::try_parse_finding_line()`
-4. On first finding: stops spinner, clears spinner line
-5. Each finding is printed immediately via `output::print_finding()`
-6. After `complete()` returns: print summary line
+- **Live stream** (single-chunk path, `--no-critique`, non-JSON):
+  1. Spinner runs on a separate tokio task (watch channel stop signal)
+  2. `on_token` callback buffers tokens, sends complete lines via unbounded mpsc channel
+  3. Consumer loop receives lines, calls `output::try_parse_finding_line()`
+  4. On first finding: stops spinner, clears spinner line
+  5. Each finding is printed immediately via `output::print_finding()`
+
+- **Batched** (chunking active OR critique active OR JSON): findings are collected silently across all chunks, validated, critiqued, then printed in one block. A finding that critique would later drop is never shown.
+
+Run-summary footer surfaces re-anchor count, context-only count, dropped-hallucination list, and critique-dropped list so the user sees how noisy the model was.
 
 ---
 
