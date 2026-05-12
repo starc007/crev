@@ -44,6 +44,24 @@ pub struct ContextBuilder {
 // Directories to skip when walking the repo
 const SKIP_DIRS: &[&str] = &["target", "node_modules", ".git", "vendor", "dist", "build"];
 
+/// Per-file source-read ceiling (1 MiB). Larger files are skipped — they are
+/// nearly always generated code or vendored bundles that would blow the
+/// token budget on their own.
+const MAX_FILE_BYTES: u64 = 1024 * 1024;
+
+/// Cap on how many files we'll walk while searching for called-function
+/// definitions and related tests. Prevents pathological repos (hundreds of
+/// thousands of source files) from making `context::build` run for minutes.
+const MAX_FILES_WALKED: usize = 5000;
+
+fn read_capped(path: &Path) -> Option<String> {
+    let meta = std::fs::metadata(path).ok()?;
+    if meta.len() > MAX_FILE_BYTES {
+        return None;
+    }
+    std::fs::read_to_string(path).ok()
+}
+
 impl ContextBuilder {
     pub fn new(repo_root: PathBuf, max_tokens: usize) -> Self {
         Self {
@@ -61,9 +79,9 @@ impl ContextBuilder {
 
         for file in &diff.files {
             let abs_path = self.repo_root.join(&file.path);
-            let source = match std::fs::read_to_string(&abs_path) {
-                Ok(s) => s,
-                Err(_) => continue,
+            let source = match read_capped(&abs_path) {
+                Some(s) => s,
+                None => continue,
             };
 
             let parsed = match self.parser.parse_file(&abs_path, &source) {
@@ -155,28 +173,41 @@ impl ContextBuilder {
         }
 
         let mut results = Vec::new();
+        let mut walked = 0usize;
         let search_dirs = ["src", "lib", "pkg", "internal", "cmd"];
 
         for dir_name in &search_dirs {
             let dir = self.repo_root.join(dir_name);
             if dir.exists() {
-                self.walk_for_functions(&dir, names, &mut results);
+                self.walk_for_functions(&dir, names, &mut results, &mut walked);
             }
         }
 
         // Also check repo root itself for single-file projects
-        self.walk_dir_shallow(&self.repo_root, names, &mut results);
+        self.walk_dir_shallow(&self.repo_root, names, &mut results, &mut walked);
 
         results
     }
 
-    fn walk_for_functions(&self, dir: &Path, names: &[String], out: &mut Vec<FunctionInfo>) {
+    fn walk_for_functions(
+        &self,
+        dir: &Path,
+        names: &[String],
+        out: &mut Vec<FunctionInfo>,
+        walked: &mut usize,
+    ) {
+        if *walked >= MAX_FILES_WALKED {
+            return;
+        }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
         };
 
         for entry in entries.flatten() {
+            if *walked >= MAX_FILES_WALKED {
+                return;
+            }
             let path = entry.path();
 
             if path.is_dir() {
@@ -185,30 +216,41 @@ impl ContextBuilder {
                         continue;
                     }
                 }
-                self.walk_for_functions(&path, names, out);
+                self.walk_for_functions(&path, names, out, walked);
             } else if is_source_file(&path) {
+                *walked += 1;
                 self.extract_matching_fns(&path, names, out);
             }
         }
     }
 
-    fn walk_dir_shallow(&self, dir: &Path, names: &[String], out: &mut Vec<FunctionInfo>) {
+    fn walk_dir_shallow(
+        &self,
+        dir: &Path,
+        names: &[String],
+        out: &mut Vec<FunctionInfo>,
+        walked: &mut usize,
+    ) {
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
         };
         for entry in entries.flatten() {
+            if *walked >= MAX_FILES_WALKED {
+                return;
+            }
             let path = entry.path();
             if path.is_file() && is_source_file(&path) {
+                *walked += 1;
                 self.extract_matching_fns(&path, names, out);
             }
         }
     }
 
     fn extract_matching_fns(&self, path: &Path, names: &[String], out: &mut Vec<FunctionInfo>) {
-        let source = match std::fs::read_to_string(path) {
-            Ok(s) => s,
-            Err(_) => return,
+        let source = match read_capped(path) {
+            Some(s) => s,
+            None => return,
         };
         let parsed = match self.parser.parse_file(path, &source) {
             Ok(p) => p,
@@ -224,41 +266,55 @@ impl ContextBuilder {
 
     fn find_related_tests(&self, fn_names: &[&str]) -> Vec<FunctionInfo> {
         let mut tests = Vec::new();
+        let mut walked = 0usize;
 
         let test_dirs = ["tests", "test", "__tests__", "spec"];
         for dir_name in &test_dirs {
             let dir = self.repo_root.join(dir_name);
             if dir.exists() {
-                self.walk_for_tests(&dir, fn_names, &mut tests);
+                self.walk_for_tests(&dir, fn_names, &mut tests, &mut walked);
             }
         }
 
         // Also inline tests in src (Rust's #[cfg(test)])
         let src_dir = self.repo_root.join("src");
         if src_dir.exists() {
-            self.walk_for_tests(&src_dir, fn_names, &mut tests);
+            self.walk_for_tests(&src_dir, fn_names, &mut tests, &mut walked);
         }
 
         tests
     }
 
-    fn walk_for_tests(&self, dir: &Path, fn_names: &[&str], out: &mut Vec<FunctionInfo>) {
+    fn walk_for_tests(
+        &self,
+        dir: &Path,
+        fn_names: &[&str],
+        out: &mut Vec<FunctionInfo>,
+        walked: &mut usize,
+    ) {
+        if *walked >= MAX_FILES_WALKED {
+            return;
+        }
         let entries = match std::fs::read_dir(dir) {
             Ok(e) => e,
             Err(_) => return,
         };
         for entry in entries.flatten() {
+            if *walked >= MAX_FILES_WALKED {
+                return;
+            }
             let path = entry.path();
             if path.is_dir() {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if !SKIP_DIRS.contains(&name) {
-                        self.walk_for_tests(&path, fn_names, out);
+                        self.walk_for_tests(&path, fn_names, out, walked);
                     }
                 }
             } else if is_source_file(&path) {
-                let source = match std::fs::read_to_string(&path) {
-                    Ok(s) => s,
-                    Err(_) => continue,
+                *walked += 1;
+                let source = match read_capped(&path) {
+                    Some(s) => s,
+                    None => continue,
                 };
                 let parsed = match self.parser.parse_file(&path, &source) {
                     Ok(p) => p,
