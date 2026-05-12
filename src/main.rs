@@ -8,6 +8,7 @@ mod llm;
 mod ollama;
 mod output;
 mod prompt;
+mod validate;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
@@ -376,19 +377,38 @@ async fn run_review(
     drop(line_tx); // close channel so receiver loop exits
 
     // ── Consume lines: stop spinner then print each finding ───────────────────
+    let validator = validate::DiffIndex::from_diff(&diff);
     let mut findings: Vec<output::Finding> = Vec::new();
+    let mut dropped_findings: Vec<(output::Finding, validate::DropReason)> = Vec::new();
+    let mut reanchored_count: usize = 0;
     let mut spinner_task = Some(spinner_task);
 
     while let Some(line) = line_rx.recv().await {
-        if let Some(f) = output::try_parse_finding_line(&line) {
+        if let Some(raw) = output::try_parse_finding_line(&line) {
+            // Stop the spinner on the first parseable line so the user
+            // sees output streaming, regardless of validation outcome.
             if let Some(task) = spinner_task.take() {
                 stop_tx.send(true).ok();
                 task.await.ok();
             }
-            if !json {
-                output::print_finding(&f);
+
+            let (kept, outcome) = validator.apply(raw.clone());
+            if let validate::Validation::Reanchor { .. } = outcome {
+                reanchored_count += 1;
             }
-            findings.push(f);
+            match kept {
+                Some(f) => {
+                    if !json {
+                        output::print_finding(&f);
+                    }
+                    findings.push(f);
+                }
+                None => {
+                    if let validate::Validation::Drop(reason) = outcome {
+                        dropped_findings.push((raw, reason));
+                    }
+                }
+            }
         }
     }
 
@@ -404,6 +424,27 @@ async fn run_review(
         output::print_findings_json(&findings)?;
     } else {
         output::print_summary(&findings, elapsed, &model);
+        if reanchored_count > 0 {
+            eprintln!(
+                "note: re-anchored {} finding(s) to the nearest line in the diff",
+                reanchored_count
+            );
+        }
+        if !dropped_findings.is_empty() {
+            eprintln!(
+                "note: dropped {} hallucinated finding(s) (line/file not in diff)",
+                dropped_findings.len()
+            );
+            for (f, reason) in &dropped_findings {
+                eprintln!(
+                    "  - [{}] {}:{}  ({})",
+                    f.severity.as_str(),
+                    f.file.display(),
+                    f.line.map(|l| l.to_string()).unwrap_or_else(|| "?".into()),
+                    reason.as_str()
+                );
+            }
+        }
     }
 
     // Save to history
