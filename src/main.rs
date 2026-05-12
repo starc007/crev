@@ -381,6 +381,7 @@ async fn run_review(
     let mut findings: Vec<output::Finding> = Vec::new();
     let mut dropped_findings: Vec<(output::Finding, validate::DropReason)> = Vec::new();
     let mut reanchored_count: usize = 0;
+    let mut context_only_count: usize = 0;
     let mut spinner_task = Some(spinner_task);
 
     while let Some(line) = line_rx.recv().await {
@@ -396,6 +397,19 @@ async fn run_review(
             if let validate::Validation::Reanchor { .. } = outcome {
                 reanchored_count += 1;
             }
+            // A finding accepted on a Context line (not Added) is usually a
+            // comment about pre-existing code — flag it so the user knows it
+            // isn't about the change itself.
+            let counts_as_context_only = matches!(
+                outcome,
+                validate::Validation::Accept { on_change: false } | validate::Validation::Reanchor { on_change: false, .. }
+            ) && !matches!(raw.severity, output::Severity::Lgtm)
+                && raw.line.is_some()
+                && !raw.file.as_os_str().is_empty();
+            if counts_as_context_only {
+                context_only_count += 1;
+            }
+
             match kept {
                 Some(f) => {
                     if !json {
@@ -428,6 +442,12 @@ async fn run_review(
             eprintln!(
                 "note: re-anchored {} finding(s) to the nearest line in the diff",
                 reanchored_count
+            );
+        }
+        if context_only_count > 0 {
+            eprintln!(
+                "note: {} finding(s) reference unchanged context lines, not the change itself",
+                context_only_count
             );
         }
         if !dropped_findings.is_empty() {
