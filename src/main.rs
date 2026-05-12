@@ -339,28 +339,10 @@ async fn run_review(
     let stream_live = !json && no_critique && !is_chunked;
 
     // ── Spinner ──────────────────────────────────────────────────────────────
-    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
-    let spinner_task = tokio::spawn(async move {
-        let frames = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"];
-        let mut i = 0usize;
-        loop {
-            tokio::select! {
-                _ = tokio::time::sleep(tokio::time::Duration::from_millis(80)) => {
-                    use std::io::Write;
-                    eprint!("\r{} analyzing...", frames[i % frames.len()]);
-                    std::io::stderr().flush().ok();
-                    i += 1;
-                }
-                _ = stop_rx.changed() => {
-                    use std::io::Write;
-                    eprint!("\r\x1b[K");
-                    std::io::stderr().flush().ok();
-                    break;
-                }
-            }
-        }
-    });
-    let mut spinner_task = Some(spinner_task);
+    // Wrapped in a Spinner struct so any early return via `?` aborts the
+    // background task instead of leaving it running until process exit. The
+    // happy path still calls `stop()` to clear the spinner line cleanly.
+    let mut spinner = Spinner::start();
 
     let start = Instant::now();
     let validator = validate::DiffIndex::from_diff(&diff);
@@ -438,10 +420,7 @@ async fn run_review(
         while let Some(line) = line_rx.recv().await {
             if let Some(raw) = output::try_parse_finding_line(&line) {
                 if stream_live {
-                    if let Some(task) = spinner_task.take() {
-                        stop_tx.send(true).ok();
-                        task.await.ok();
-                    }
+                    spinner.stop().await;
                 }
 
                 let (kept, outcome) = validator.apply(raw.clone());
@@ -491,10 +470,7 @@ async fn run_review(
     }
 
     // Stop spinner now that all LLM calls are done.
-    if let Some(task) = spinner_task.take() {
-        stop_tx.send(true).ok();
-        task.await.ok();
-    }
+    spinner.stop().await;
 
     // For the buffered (critique-enabled) path, print the surviving findings now.
     if !stream_live && !json {
@@ -696,6 +672,69 @@ fi
 
 fn find_git_root(start: &std::path::Path) -> Result<PathBuf> {
     git::find_repo_root(start)
+}
+
+/// Owns the spinner's tokio task and stop channel so it always shuts down,
+/// including on `?` early returns: Drop aborts the task. The happy path
+/// should call `stop().await` to clear the spinner line cleanly before
+/// printing real output.
+struct Spinner {
+    stop_tx: Option<tokio::sync::watch::Sender<bool>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl Spinner {
+    fn start() -> Self {
+        let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+        let task = tokio::spawn(async move {
+            let frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0usize;
+            loop {
+                tokio::select! {
+                    _ = tokio::time::sleep(tokio::time::Duration::from_millis(80)) => {
+                        use std::io::Write;
+                        eprint!("\r{} analyzing...", frames[i % frames.len()]);
+                        std::io::stderr().flush().ok();
+                        i += 1;
+                    }
+                    _ = stop_rx.changed() => {
+                        use std::io::Write;
+                        eprint!("\r\x1b[K");
+                        std::io::stderr().flush().ok();
+                        break;
+                    }
+                }
+            }
+        });
+        Self {
+            stop_tx: Some(stop_tx),
+            task: Some(task),
+        }
+    }
+
+    /// Cleanly stop the spinner: send the stop signal and await the task so
+    /// the spinner line is cleared before subsequent prints land.
+    async fn stop(&mut self) {
+        if let Some(tx) = self.stop_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(task) = self.task.take() {
+            task.await.ok();
+        }
+    }
+}
+
+impl Drop for Spinner {
+    fn drop(&mut self) {
+        // Best-effort cleanup on `?` paths or panics. Abort the task instead
+        // of awaiting it, since Drop is sync.
+        if let Some(tx) = self.stop_tx.take() {
+            tx.send(true).ok();
+        }
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
+    }
 }
 
 const INSTALL_SCRIPT_URL: &str =

@@ -29,6 +29,9 @@ pub struct DiffIndex {
     /// We track Added and Context separately so re-anchoring can prefer real
     /// changes (Added) over surrounding code (Context).
     files: HashMap<String, FileLines>,
+    /// Basename → full key map, used to short-circuit the linear suffix-match
+    /// fallback when the model strips or adds a leading directory.
+    basename_index: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -45,8 +48,20 @@ struct FileLines {
 impl DiffIndex {
     pub fn from_diff(diff: &ParsedDiff) -> Self {
         let mut files: HashMap<String, FileLines> = HashMap::new();
+        let mut basename_index: HashMap<String, String> = HashMap::new();
         for file in &diff.files {
             let key = file.path.to_string_lossy().into_owned();
+            if let Some(basename) = file
+                .path
+                .file_name()
+                .and_then(|n| n.to_str())
+            {
+                // First entry wins on collision — rare, and the linear-suffix
+                // fallback below still handles the duplicate-basename case.
+                basename_index
+                    .entry(basename.to_string())
+                    .or_insert_with(|| key.clone());
+            }
             let entry = files.entry(key).or_default();
             for hunk in &file.hunks {
                 let mut line_num = hunk.new_start;
@@ -69,20 +84,35 @@ impl DiffIndex {
                 }
             }
         }
-        Self { files }
+        Self { files, basename_index }
+    }
+
+    /// Resolve a finding's file path to a stored `FileLines` entry. Tries the
+    /// exact key first (zero-cost), then the basename map (O(1)), and only
+    /// falls back to a linear suffix scan when both miss.
+    fn lookup_file(&self, file: &str) -> Option<&FileLines> {
+        if let Some(fl) = self.files.get(file) {
+            return Some(fl);
+        }
+        if let Some(basename) = std::path::Path::new(file)
+            .file_name()
+            .and_then(|n| n.to_str())
+        {
+            if let Some(real_key) = self.basename_index.get(basename) {
+                if let Some(fl) = self.files.get(real_key) {
+                    return Some(fl);
+                }
+            }
+        }
+        self.files
+            .iter()
+            .find(|(k, _)| k.ends_with(file) || file.ends_with(k.as_str()))
+            .map(|(_, v)| v)
     }
 
     /// Look up the source text for a (file, line) pair.
     fn line_content(&self, file: &str, line: u32) -> Option<String> {
-        self.files
-            .get(file)
-            .or_else(|| {
-                self.files
-                    .iter()
-                    .find(|(k, _)| k.ends_with(file) || file.ends_with(k.as_str()))
-                    .map(|(_, v)| v)
-            })
-            .and_then(|fl| fl.content.get(&line).cloned())
+        self.lookup_file(file).and_then(|fl| fl.content.get(&line).cloned())
     }
 
     /// Outcome of validating a single finding.
@@ -102,19 +132,7 @@ impl DiffIndex {
         };
 
         let file_key = finding.file.to_string_lossy();
-        let matches: Option<&FileLines> = self
-            .files
-            .get(file_key.as_ref())
-            // Fall back to a suffix match — the model sometimes prepends or
-            // strips a leading directory we already showed it.
-            .or_else(|| {
-                self.files
-                    .iter()
-                    .find(|(k, _)| {
-                        k.ends_with(file_key.as_ref()) || file_key.ends_with(k.as_str())
-                    })
-                    .map(|(_, v)| v)
-            });
+        let matches: Option<&FileLines> = self.lookup_file(file_key.as_ref());
 
         let Some(lines) = matches else {
             return Validation::Drop(DropReason::UnknownFile);
