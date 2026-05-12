@@ -202,7 +202,7 @@ impl ContextBuilder {
     pub async fn build(&self, diff: ParsedDiff, index: &RepoIndex) -> Result<ReviewContext> {
         // 1. For each changed file, parse with tree-sitter
         let mut functions_changed: Vec<FunctionInfo> = Vec::new();
-        let mut all_called_names: Vec<String> = Vec::new();
+        let mut all_calls: Vec<(PathBuf, String)> = Vec::new();
         let mut types_used: Vec<TypeDef> = Vec::new();
 
         for file in &diff.files {
@@ -220,9 +220,13 @@ impl ContextBuilder {
             // 2. Find functions that overlap with diff hunks
             let changed_fns = self.functions_overlapping_hunks(&parsed, &file.hunks);
 
-            // 3. Collect all calls made by those functions
+            // 3. Collect all calls made by those functions — tagged with the
+            //    caller's repo-relative file so we can disambiguate names that
+            //    are defined in multiple places (e.g. `new`, `default`).
             for f in &changed_fns {
-                all_called_names.extend(f.called_functions.iter().cloned());
+                for call in &f.called_functions {
+                    all_calls.push((file.path.clone(), call.clone()));
+                }
             }
             functions_changed.extend(changed_fns);
 
@@ -231,11 +235,11 @@ impl ContextBuilder {
             types_used.extend(file_types);
         }
 
-        all_called_names.sort();
-        all_called_names.dedup();
+        all_calls.sort();
+        all_calls.dedup();
 
         // 5. Look up definitions from the prebuilt repo index — no walking.
-        let called_functions = lookup_called_function_defs(&all_called_names, index);
+        let called_functions = lookup_called_function_defs(&all_calls, index);
 
         // 6. Find related tests from the prebuilt index
         let changed_fn_names: Vec<&str> = functions_changed.iter().map(|f| f.name.as_str()).collect();
@@ -356,24 +360,54 @@ fn is_source_file(path: &Path) -> bool {
     )
 }
 
-/// Resolve called-function names against the prebuilt index. Returns at most
-/// one match per name (the first encountered) — receiver-aware disambiguation
-/// is a follow-up, but a single definition per name is already enough to
-/// ground most reviews.
-fn lookup_called_function_defs(names: &[String], index: &RepoIndex) -> Vec<FunctionInfo> {
+/// Resolve called-function names against the prebuilt index. When multiple
+/// definitions share a name (`new`, `default`, `build`), prefer one defined
+/// in the same file as the call site, then any in the same directory, then
+/// fall back to the first match. This avoids the worst of the
+/// name-collision problem without doing real type resolution.
+fn lookup_called_function_defs(
+    calls: &[(PathBuf, String)],
+    index: &RepoIndex,
+) -> Vec<FunctionInfo> {
     let mut out: Vec<FunctionInfo> = Vec::new();
     let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    for name in names {
+    for (caller_file, name) in calls {
         if !seen.insert(name.as_str()) {
             continue;
         }
-        if let Some(candidates) = index.functions_by_name.get(name) {
-            if let Some(first) = candidates.first() {
-                out.push(first.info.clone());
-            }
+        let Some(candidates) = index.functions_by_name.get(name) else {
+            continue;
+        };
+        let pick = pick_best_candidate(candidates, caller_file);
+        if let Some(p) = pick {
+            out.push(p.info.clone());
         }
     }
     out
+}
+
+fn pick_best_candidate<'a>(
+    candidates: &'a [IndexedFunction],
+    caller_file: &Path,
+) -> Option<&'a IndexedFunction> {
+    if candidates.len() == 1 {
+        return candidates.first();
+    }
+    // Same file wins.
+    if let Some(same_file) = candidates.iter().find(|c| c.file.ends_with(caller_file)) {
+        return Some(same_file);
+    }
+    // Then same directory.
+    let caller_dir = caller_file.parent();
+    if let Some(dir) = caller_dir {
+        if let Some(same_dir) = candidates
+            .iter()
+            .find(|c| c.file.parent().is_some_and(|p| p.ends_with(dir)))
+        {
+            return Some(same_dir);
+        }
+    }
+    candidates.first()
 }
 
 /// Pull related test functions from the index instead of walking again. A
