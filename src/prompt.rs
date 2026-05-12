@@ -144,16 +144,19 @@ pub fn build_review_prompt_parts_ctx(
     }
 
     if !ctx.types_used.is_empty() {
-        dynamic.push_str("=== TYPES USED ===\n");
+        let diff_idents = collect_diff_identifiers(&ctx.diff);
+        let mut rendered_types = String::new();
         for t in &ctx.types_used {
-            dynamic.push_str(&format!(
-                "{} {} {{ {} }}\n",
-                format!("{:?}", t.kind).to_lowercase(),
-                t.name,
-                t.fields.join(", ")
-            ));
+            if let Some(line) = render_type(t, &diff_idents) {
+                rendered_types.push_str(&line);
+                rendered_types.push('\n');
+            }
         }
-        dynamic.push('\n');
+        if !rendered_types.is_empty() {
+            dynamic.push_str("=== TYPES USED ===\n");
+            dynamic.push_str(&rendered_types);
+            dynamic.push('\n');
+        }
     }
 
     if !ctx.test_functions.is_empty() {
@@ -279,6 +282,63 @@ fn format_hunk(hunk: &DiffHunk) -> String {
 
 pub fn estimate_tokens(text: &str) -> usize {
     text.len() / 4
+}
+
+/// Render a single type definition, keeping only the fields whose names
+/// appear somewhere in the diff text. A struct with 30 fields where the
+/// diff only touches 2 of them becomes a 2-field rendering — same signal
+/// for the reviewer at a tenth of the tokens. If no fields match we keep
+/// just the type name with `…`, which still tells the model the type
+/// existed without spending budget on every field.
+fn render_type(t: &crate::ast::TypeDef, diff_idents: &std::collections::HashSet<String>) -> Option<String> {
+    let kind = format!("{:?}", t.kind).to_lowercase();
+    if t.fields.is_empty() {
+        // Traits, type aliases, enums-with-no-payload — keep the name.
+        return Some(format!("{} {} {{ }}", kind, t.name));
+    }
+    let kept: Vec<&str> = t
+        .fields
+        .iter()
+        .filter(|f| diff_idents.contains(f.as_str()))
+        .map(|f| f.as_str())
+        .collect();
+    if kept.is_empty() {
+        return Some(format!("{} {} {{ … }}", kind, t.name));
+    }
+    let omitted = t.fields.len() - kept.len();
+    let mut body = kept.join(", ");
+    if omitted > 0 {
+        body.push_str(&format!(", /* +{} more */", omitted));
+    }
+    Some(format!("{} {} {{ {} }}", kind, t.name, body))
+}
+
+/// Extract identifier-like tokens from every line of the diff. Used to
+/// filter type-field renderings: a field the diff doesn't reference is
+/// almost never relevant to reviewing the diff.
+fn collect_diff_identifiers(diff: &ParsedDiff) -> std::collections::HashSet<String> {
+    let mut out: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for file in &diff.files {
+        for hunk in &file.hunks {
+            for line in &hunk.lines {
+                let text = match line {
+                    DiffLine::Added(s) | DiffLine::Removed(s) | DiffLine::Context(s) => s.as_str(),
+                };
+                let mut current = String::new();
+                for ch in text.chars() {
+                    if ch.is_alphanumeric() || ch == '_' {
+                        current.push(ch);
+                    } else if !current.is_empty() {
+                        out.insert(std::mem::take(&mut current));
+                    }
+                }
+                if !current.is_empty() {
+                    out.insert(current);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Split a diff into chunks that each fit inside `max_tokens` worth of
