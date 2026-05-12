@@ -139,7 +139,25 @@ pub fn build_review_prompt_ctx(
 /// Fallback: build a prompt from a raw diff only (Phase 1 behaviour).
 pub fn build_review_prompt(diff: &ParsedDiff, config: &Config, security_mode: bool) -> String {
     let diff = if estimate_tokens(&format_diff(diff)) > config.review.max_tokens {
-        truncate_to_budget(diff, config.review.max_tokens)
+        let original_files: Vec<std::path::PathBuf> =
+            diff.files.iter().map(|f| f.path.clone()).collect();
+        let trimmed = truncate_to_budget(diff, config.review.max_tokens);
+        let kept: std::collections::HashSet<_> =
+            trimmed.files.iter().map(|f| f.path.clone()).collect();
+        let dropped: Vec<_> = original_files
+            .iter()
+            .filter(|p| !kept.contains(*p))
+            .collect();
+        if !dropped.is_empty() {
+            eprintln!(
+                "warning: diff exceeded token budget; {} file(s) dropped from review:",
+                dropped.len()
+            );
+            for p in &dropped {
+                eprintln!("  - {}", p.display());
+            }
+        }
+        trimmed
     } else {
         diff.clone()
     };
