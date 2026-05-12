@@ -42,10 +42,6 @@ enum Commands {
         #[arg(long)]
         commits: Option<String>,
 
-        /// Review a specific file
-        #[arg(long)]
-        file: Option<PathBuf>,
-
         /// Output findings as JSON
         #[arg(long)]
         json: bool,
@@ -156,7 +152,6 @@ async fn main() -> Result<()> {
             unstaged,
             commit,
             commits,
-            file: _file,
             json,
             fail_on,
             security,
